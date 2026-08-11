@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>清流 · B站过滤首页</title>
+  <link rel="stylesheet" href="feed.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="feed.html" aria-label="过滤首页">
+      <span class="brand-mark">清</span>
+      <span><strong>清流</strong><small>B站过滤首页</small></span>
+    </a>
+    <div class="topbar-actions">
+      <span id="sourceBadge" class="source-badge">正在连接 B站</span>
+      <button id="refreshButton" class="button secondary" type="button">换一批</button>
+      <a class="button primary" href="https://www.bilibili.com/" target="_blank" rel="noreferrer">打开 B站</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="settings-panel" aria-labelledby="settingsTitle">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">FILTER</p>
+          <h1 id="settingsTitle">过滤门槛</h1>
+        </div>
+        <span class="strict-pill">全部通过才显示</span>
+      </div>
+
+      <form id="settingsForm" novalidate>
+        <label class="field">
+          <span>屏蔽关键词</span>
+          <textarea id="blockedKeywords" rows="5" placeholder="每行一个，也可以用逗号分隔"></textarea>
+          <small>忽略大小写、全角字符和空格；命中任意一个即过滤。</small>
+        </label>
+
+        <fieldset>
+          <legend>关键词检查范围</legend>
+          <div class="checkbox-grid">
+            <label><input id="scopeTitle" type="checkbox">标题</label>
+            <label><input id="scopeDescription" type="checkbox">简介</label>
+            <label><input id="scopeTags" type="checkbox">标签</label>
+            <label><input id="scopeUploader" type="checkbox">UP主名称</label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>UP主粉丝数</legend>
+          <div class="range-row">
+            <label><span>最低</span><input id="minFollowers" type="number" min="0" step="1" placeholder="不限"></label>
+            <i>至</i>
+            <label><span>最高</span><input id="maxFollowers" type="number" min="0" step="1" placeholder="不限"></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>视频播放量</legend>
+          <div class="range-row">
+            <label><span>最低</span><input id="minViews" type="number" min="0" step="1" placeholder="不限"></label>
+            <i>至</i>
+            <label><span>最高</span><input id="maxViews" type="number" min="0" step="1" placeholder="不限"></label>
+          </div>
+        </fieldset>
+
+        <p id="settingsError" class="form-error" role="alert"></p>
+        <div class="form-actions">
+          <button class="button primary grow" type="submit">保存并重新过滤</button>
+          <button id="resetButton" class="button ghost" type="button">恢复默认</button>
+        </div>
+      </form>
+
+      <div class="privacy-note">
+        <strong>本地过滤</strong>
+        <p>设置和粉丝缓存只保存在浏览器中。粉丝数无法确认时，视频不会被放行。</p>
+        <button id="clearCacheButton" class="text-button" type="button">清除粉丝与详情缓存</button>
+      </div>
+    </aside>
+
+    <section class="feed-section" aria-labelledby="feedTitle">
+      <div class="feed-heading">
+        <div>
+          <p class="eyebrow">CLEAN FEED</p>
+          <h2 id="feedTitle">为你筛选</h2>
+          <p id="statusText" class="status-text" aria-live="polite">正在准备过滤器…</p>
+        </div>
+        <div class="stats" aria-label="过滤统计">
+          <div><strong id="acceptedCount">0</strong><span>已通过</span></div>
+          <div><strong id="rejectedCount">0</strong><span>已过滤</span></div>
+          <div><strong id="inspectedCount">0</strong><span>已检查</span></div>
+        </div>
+      </div>
+
+      <div id="reasonSummary" class="reason-summary" hidden></div>
+      <div id="videoGrid" class="video-grid" aria-live="polite"></div>
+      <div id="skeletonGrid" class="video-grid skeleton-grid" aria-hidden="true"></div>
+
+      <div id="emptyState" class="empty-state" hidden>
+        <span class="empty-icon">筛</span>
+        <h3>暂时没有足够的通过结果</h3>
+        <p>过滤器已经检查了本轮候选。可以放宽门槛，或稍后换一批。</p>
+      </div>
+
+      <button id="loadMoreButton" class="button load-more" type="button">继续加载通过的视频</button>
+    </section>
+  </main>
+
+  <script src="filter-core.js"></script>
+  <script src="feed.js"></script>
+</body>
+</html>

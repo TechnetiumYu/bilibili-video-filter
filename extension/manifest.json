@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "清流：B站视频过滤器",
+  "version": "0.1.0",
+  "description": "按关键词、UP主粉丝数和播放量过滤 B站推荐视频，只显示全部条件通过的内容。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://api.bilibili.com/*"
+  ],
+  "action": {
+    "default_title": "打开 B站过滤首页"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
