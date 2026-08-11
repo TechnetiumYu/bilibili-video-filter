@@ -1,0 +1,10 @@
+{
+  "name": "bilibili-video-filter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first Bilibili recommendation feed filter browser extension.",
+  "scripts": {
+    "test": "node --test tests/filter-core.test.js"
+  },
+  "license": "MIT"
+}
