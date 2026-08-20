@@ -1,25 +1,169 @@
+importScripts("topic-classifier.js", "request-policy.js");
+
 const BILI_API = "https://api.bilibili.com";
 const FOLLOWER_CACHE_KEY = "biliFilterFollowerCacheV1";
-const DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
+const DETAIL_CACHE_KEY = "biliFilterDetailCacheV2";
+const LEGACY_DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
+const TOPIC_CACHE_KEY = "biliFilterTopicCacheV1";
+const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV1";
+const RATE_LIMIT_KEY = "biliFilterRateLimitV2";
 const FOLLOWER_TTL_MS = 24 * 60 * 60 * 1000;
-const DETAIL_TTL_MS = 6 * 60 * 60 * 1000;
+const DETAIL_TTL_MS = 24 * 60 * 60 * 1000;
+const TOPIC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CANDIDATE_FRESH_MS = 2 * 60 * 1000;
+const CANDIDATE_STALE_MS = 30 * 60 * 1000;
+const CLASSIFIER_BATCH_SIZE = 20;
+const TOPIC_TAXONOMY_VERSION = 1;
+const TOPIC_PROMPT_VERSION = 1;
+const BILI_REQUEST_INTERVAL_MS = 200;
+const BILI_MAX_CONCURRENCY = 2;
+
+let biliRequestLanes = Array.from({length: BILI_MAX_CONCURRENCY}, () => Promise.resolve());
+let biliStartQueue = Promise.resolve();
+let nextBiliLane = 0;
+let nextBiliRequestAt = 0;
+let rateLimitState = {strikes: 0, lastTriggeredAt: 0, until: 0, endpoint: ""};
+let rateLimitLoaded = false;
+
+class BiliApiError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "BiliApiError";
+    this.status = Number(options.status) || 0;
+    this.endpoint = String(options.endpoint || "B站接口");
+    this.retryAfterMs = Math.max(0, Number(options.retryAfterMs) || 0);
+    this.biliRateLimited = this.status === 412;
+  }
+}
 
 chrome.action.onClicked.addListener(() => {
   chrome.tabs.create({url: chrome.runtime.getURL("feed.html")});
 });
 
-async function apiJson(path) {
-  const response = await fetch(`${BILI_API}${path}`, {
-    credentials: "include",
-    headers: {Accept: "application/json"},
-    referrer: "https://www.bilibili.com/",
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function loadRateLimitState() {
+  if (rateLimitLoaded) return rateLimitState;
+  const stored = await getStorageValue(RATE_LIMIT_KEY);
+  if (stored && typeof stored === "object") rateLimitState = {...rateLimitState, ...stored};
+  rateLimitLoaded = true;
+  return rateLimitState;
+}
+
+async function saveRateLimitState() {
+  await setStorageValue(RATE_LIMIT_KEY, rateLimitState);
+}
+
+async function activateRateLimit(endpoint) {
+  await loadRateLimitState();
+  const now = Date.now();
+  const active = BiliRequestPolicy.rateLimitStatus(rateLimitState, now);
+  if (active.rateLimited) return active.retryAfterMs;
+  const next = BiliRequestPolicy.nextRateLimitState(rateLimitState, now, endpoint);
+  const waitMs = next.waitMs;
+  rateLimitState = {strikes: next.strikes, lastTriggeredAt: next.lastTriggeredAt, until: next.until, endpoint: next.endpoint};
+  await saveRateLimitState();
+  return waitMs;
+}
+
+function acquireBiliStartSlot() {
+  const start = biliStartQueue.then(async () => {
+    await loadRateLimitState();
+    const now = Date.now();
+    if (rateLimitState.until > now) {
+      throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
+        status: 412,
+        endpoint: rateLimitState.endpoint,
+        retryAfterMs: rateLimitState.until - now,
+      });
+    }
+    const spacing = Math.max(0, nextBiliRequestAt - now);
+    if (spacing) await delay(spacing);
+    const afterWait = Date.now();
+    if (rateLimitState.until > afterWait) {
+      throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
+        status: 412,
+        endpoint: rateLimitState.endpoint,
+        retryAfterMs: rateLimitState.until - afterWait,
+      });
+    }
+    nextBiliRequestAt = Date.now() + BILI_REQUEST_INTERVAL_MS + Math.floor(Math.random() * 100);
   });
-  if (!response.ok) throw new Error(`B站接口返回 HTTP ${response.status}`);
-  const payload = await response.json();
-  if (payload.code !== 0) {
-    throw new Error(payload.message || `B站接口错误 ${payload.code}`);
+  biliStartQueue = start.catch(() => undefined);
+  return start;
+}
+
+function scheduleBiliRequest(worker) {
+  const laneIndex = nextBiliLane++ % BILI_MAX_CONCURRENCY;
+  const run = biliRequestLanes[laneIndex].then(async () => {
+    await acquireBiliStartSlot();
+    return worker();
+  });
+  biliRequestLanes[laneIndex] = run.catch(() => undefined);
+  return run;
+}
+
+async function runFastBiliRequest(worker) {
+  await loadRateLimitState();
+  const now = Date.now();
+  if (rateLimitState.until > now) {
+    throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
+      status: 412,
+      endpoint: rateLimitState.endpoint,
+      retryAfterMs: rateLimitState.until - now,
+    });
   }
-  return payload.data;
+  return worker();
+}
+
+async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = "B站接口", requestProfile = "search-safe") {
+  const execute = async () => {
+    const response = await fetch(`${BILI_API}${path}`, {
+      credentials: "include",
+      headers: {Accept: "application/json"},
+      referrer,
+    });
+    if (!response.ok) {
+      const retryAfterMs = response.status === 412 ? await activateRateLimit(endpoint) : 0;
+      throw new BiliApiError(`${endpoint}返回 HTTP ${response.status}`, {
+        status: response.status,
+        endpoint,
+        retryAfterMs,
+      });
+    }
+    const payload = await response.json();
+    if (payload.code !== 0) {
+      if (Number(payload.code) === -412 || Number(payload.code) === 412) {
+        const retryAfterMs = await activateRateLimit(endpoint);
+        throw new BiliApiError(payload.message || `${endpoint}触发风控`, {status: 412, endpoint, retryAfterMs});
+      }
+      throw new BiliApiError(payload.message || `${endpoint}错误 ${payload.code}`, {endpoint});
+    }
+    return payload.data;
+  };
+  return requestProfile === "feed-fast" ? runFastBiliRequest(execute) : scheduleBiliRequest(execute);
+}
+
+function stripMarkup(value) {
+  const entities = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'"};
+  return String(value || "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(amp|lt|gt|quot|#39);/g, entity => entities[entity] || entity)
+    .trim();
+}
+
+function parseDuration(value) {
+  if (Number.isFinite(Number(value))) return Math.max(0, Number(value));
+  const parts = String(value || "").split(":").map(Number);
+  if (!parts.length || parts.some(part => !Number.isFinite(part) || part < 0)) return 0;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+function absoluteImageUrl(value) {
+  const text = String(value || "");
+  return text.startsWith("//") ? `https:${text}` : text;
 }
 
 function normalizeRecommendedItem(item) {
@@ -35,6 +179,8 @@ function normalizeRecommendedItem(item) {
     coverUrl: item.pic || "",
     duration: Number(item.duration) || 0,
     publishTime: Number(item.pubdate) || 0,
+    categoryId: String(item.tid || ""),
+    categoryName: item.tname || "",
     playCount: Number(item.stat?.view) || 0,
     likeCount: Number(item.stat?.like) || 0,
     danmakuCount: Number(item.stat?.danmaku) || 0,
@@ -57,6 +203,8 @@ function normalizePopularItem(item) {
     coverUrl: item.pic || "",
     duration: Number(item.duration) || 0,
     publishTime: Number(item.pubdate) || 0,
+    categoryId: String(item.tid || ""),
+    categoryName: item.tname || "",
     playCount: Number(item.stat?.view) || 0,
     likeCount: Number(item.stat?.like) || 0,
     danmakuCount: Number(item.stat?.danmaku) || 0,
@@ -65,7 +213,30 @@ function normalizePopularItem(item) {
   };
 }
 
-async function fetchFeed({batch = 1, pageSize = 20} = {}) {
+function normalizeSearchItem(item) {
+  if (!item?.bvid || !item?.mid) return null;
+  return {
+    bvid: item.bvid,
+    title: stripMarkup(item.title),
+    description: stripMarkup(item.description || item.desc),
+    tags: String(item.tag || "").split(",").map(tag => tag.trim()).filter(Boolean),
+    uploaderId: String(item.mid),
+    uploaderName: stripMarkup(item.author),
+    uploaderAvatar: absoluteImageUrl(item.upic),
+    coverUrl: absoluteImageUrl(item.pic || item.cover),
+    duration: parseDuration(item.duration),
+    publishTime: Number(item.pubdate) || 0,
+    categoryId: String(item.typeid || item.tid || ""),
+    categoryName: stripMarkup(item.typename || item.tname),
+    playCount: Number(item.play) || 0,
+    likeCount: Number(item.like) || 0,
+    danmakuCount: Number(item.video_review ?? item.danmaku) || 0,
+    url: item.arcurl || `https://www.bilibili.com/video/${item.bvid}`,
+    detailsAvailable: false,
+  };
+}
+
+async function fetchFeedUncached({batch = 1, pageSize = 20, requestProfile = "feed-fast"} = {}) {
   const safeBatch = Math.max(1, Math.min(1000, Number(batch) || 1));
   const safeSize = Math.max(1, Math.min(30, Number(pageSize) || 20));
   try {
@@ -77,19 +248,86 @@ async function fetchFeed({batch = 1, pageSize = 20} = {}) {
       feed_version: "V8",
       homepage_ver: "1",
     });
-    const data = await apiJson(`/x/web-interface/index/top/feed/rcmd?${query}`);
+    const data = await apiJson(`/x/web-interface/index/top/feed/rcmd?${query}`, "https://www.bilibili.com/", "推荐接口", requestProfile);
     const items = (data?.item || []).map(normalizeRecommendedItem).filter(Boolean);
     if (items.length) return {source: "recommend", items};
   } catch (error) {
     console.warn("个性化推荐接口不可用，改用热门视频：", error);
   }
 
-  const data = await apiJson(`/x/web-interface/popular?ps=${safeSize}&pn=${safeBatch}`);
+  const data = await apiJson(`/x/web-interface/popular?ps=${safeSize}&pn=${safeBatch}`, "https://www.bilibili.com/", "热门接口", requestProfile);
   return {
     source: "popular",
     items: (data?.list || []).map(normalizePopularItem).filter(Boolean),
     noMore: Boolean(data?.no_more),
   };
+}
+
+async function searchVideosUncached({query = "", page = 1, pageSize = 20} = {}) {
+  const safeQuery = String(query).trim().slice(0, 100);
+  if (!safeQuery) throw new Error("请输入搜索关键词");
+  const safePage = Math.max(1, Math.min(1000, Number(page) || 1));
+  const safeSize = Math.max(1, Math.min(30, Number(pageSize) || 20));
+  const params = new URLSearchParams({
+    search_type: "video",
+    keyword: safeQuery,
+    page: String(safePage),
+    page_size: String(safeSize),
+  });
+  const data = await apiJson(`/x/web-interface/search/type?${params}`, "https://search.bilibili.com/", "搜索接口");
+  const totalPages = Math.max(0, Number(data?.numPages) || 0);
+  return {
+    source: "search",
+    query: safeQuery,
+    items: (data?.result || []).map(normalizeSearchItem).filter(Boolean),
+    total: Math.max(0, Number(data?.numResults) || 0),
+    noMore: totalPages === 0 || safePage >= totalPages,
+  };
+}
+
+async function cachedCandidates(key, loader) {
+  const cache = await getStorageValue(CANDIDATE_CACHE_KEY);
+  const now = Date.now();
+  const cached = cache[key];
+  const cacheMode = BiliRequestPolicy.candidateCacheMode(cached, now, CANDIDATE_FRESH_MS, CANDIDATE_STALE_MS);
+  if (cacheMode === "fresh") {
+    return {...cached.value, cacheMode: "fresh"};
+  }
+  try {
+    const value = await loader();
+    cache[key] = {value, fetchedAt: now};
+    const compact = Object.fromEntries(Object.entries(cache)
+      .filter(([, entry]) => now - Number(entry?.fetchedAt || 0) < CANDIDATE_STALE_MS * 2)
+      .sort((left, right) => Number(left[1]?.fetchedAt || 0) - Number(right[1]?.fetchedAt || 0))
+      .slice(-200));
+    await setStorageValue(CANDIDATE_CACHE_KEY, compact);
+    return {...value, cacheMode: "network"};
+  } catch (error) {
+    if (cacheMode === "stale" && error?.biliRateLimited) {
+      return {
+        ...cached.value,
+        cacheMode: "stale",
+        rateLimited: true,
+        retryAfterMs: error.retryAfterMs,
+        rateLimitEndpoint: error.endpoint,
+      };
+    }
+    throw error;
+  }
+}
+
+async function fetchFeed(options = {}) {
+  const batch = Math.max(1, Math.min(1000, Number(options.batch) || 1));
+  const pageSize = Math.max(1, Math.min(30, Number(options.pageSize) || 20));
+  const requestProfile = options.requestProfile === "feed-fast" ? "feed-fast" : "search-safe";
+  return cachedCandidates(`feed:${batch}:${pageSize}`, () => fetchFeedUncached({batch, pageSize, requestProfile}));
+}
+
+async function searchVideos(options = {}) {
+  const query = String(options.query || "").trim().slice(0, 100);
+  const page = Math.max(1, Math.min(1000, Number(options.page) || 1));
+  const pageSize = Math.max(1, Math.min(30, Number(options.pageSize) || 20));
+  return cachedCandidates(`search:${query}:${page}:${pageSize}`, () => searchVideosUncached({query, page, pageSize}));
 }
 
 async function getStorageValue(key) {
@@ -114,13 +352,128 @@ async function mapWithConcurrency(values, concurrency, worker) {
   return results;
 }
 
-async function fetchFollowerCounts(mids) {
+function validateLocalEndpoint(value) {
+  let endpoint;
+  try {
+    endpoint = new URL(String(value || ""));
+  } catch (_error) {
+    throw new Error("本地模型接口地址无效");
+  }
+  if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(endpoint.hostname)) {
+    throw new Error("为保护隐私，模型接口仅允许使用本机 http://127.0.0.1 或 http://localhost 地址");
+  }
+  return endpoint.href;
+}
+
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function topicCacheKey(video, policies, classifier) {
+  return sha256(JSON.stringify({
+    taxonomyVersion: TOPIC_TAXONOMY_VERSION,
+    promptVersion: TOPIC_PROMPT_VERSION,
+    model: String(classifier.model || ""),
+    endpoint: String(classifier.endpoint || ""),
+    video: BiliTopicClassifier.classificationInput(video),
+    topics: policies.map(policy => ({id: policy.id, name: policy.name, aliases: policy.aliases || []})),
+  }));
+}
+
+async function classifyTopics({videos = [], policies = [], classifier = {}} = {}) {
+  const safeVideos = videos.slice(0, CLASSIFIER_BATCH_SIZE).map(BiliTopicClassifier.classificationInput);
+  const safePolicies = policies.filter(policy => policy?.enabled !== false && String(policy?.name || "").trim()).slice(0, 30);
+  if (!safeVideos.length || !safePolicies.length) {
+    return {results: safeVideos.map(video => ({id: video.id, topics: []})), mode: "none"};
+  }
+
+  if (!classifier.semanticEnabled) {
+    const classifiedAt = Date.now();
+    return {
+      results: BiliTopicClassifier.lexicalClassify(safeVideos, safePolicies).map(result => ({
+        ...result,
+        classifiedAt,
+        cacheExpiresAt: null,
+      })),
+      mode: "keyword",
+    };
+  }
+
+  const endpoint = validateLocalEndpoint(classifier.endpoint);
+  const now = Date.now();
+  const cache = await getStorageValue(TOPIC_CACHE_KEY);
+  const cacheKeys = await Promise.all(safeVideos.map(video => topicCacheKey(video, safePolicies, classifier)));
+  const resultsById = new Map();
+  const missingVideos = [];
+  const missingKeys = [];
+  safeVideos.forEach((video, index) => {
+    const cached = cache[cacheKeys[index]];
+    if (cached && now - Number(cached.fetchedAt || 0) < TOPIC_TTL_MS && cached.value?.id === video.id) {
+      resultsById.set(video.id, {
+        ...cached.value,
+        classifiedAt: cached.fetchedAt,
+        cacheExpiresAt: Number(cached.fetchedAt) + TOPIC_TTL_MS,
+      });
+    } else {
+      missingVideos.push(video);
+      missingKeys.push(cacheKeys[index]);
+    }
+  });
+  if (!missingVideos.length) {
+    return {results: safeVideos.map(video => resultsById.get(video.id)), mode: "semantic-cache"};
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Math.min(120000, Math.max(5000, Number(classifier.timeoutMs) || 120000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      credentials: "omit",
+      headers: {"Content-Type": "application/json", Accept: "application/json"},
+      body: JSON.stringify({
+        model: String(classifier.model || "").slice(0, 120),
+        temperature: 0,
+        response_format: {type: "json_object"},
+        messages: BiliTopicClassifier.buildMessages(missingVideos, safePolicies),
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`本地模型接口返回 HTTP ${response.status}`);
+    const payload = await response.json();
+    const freshResults = BiliTopicClassifier.validateResults(payload, missingVideos, safePolicies);
+    const missingKeyById = new Map(missingVideos.map((video, index) => [video.id, missingKeys[index]]));
+    freshResults.forEach(result => {
+      resultsById.set(result.id, {...result, classifiedAt: now, cacheExpiresAt: now + TOPIC_TTL_MS});
+      cache[missingKeyById.get(result.id)] = {value: result, fetchedAt: now};
+    });
+    const compactCache = Object.fromEntries(
+      Object.entries(cache)
+        .filter(([, entry]) => now - Number(entry?.fetchedAt || 0) < TOPIC_TTL_MS * 2)
+        .sort((left, right) => Number(left[1]?.fetchedAt || 0) - Number(right[1]?.fetchedAt || 0))
+        .slice(-1000)
+    );
+    await setStorageValue(TOPIC_CACHE_KEY, compactCache);
+    return {results: safeVideos.map(video => resultsById.get(video.id)), mode: "semantic"};
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`本地模型在 ${Math.round(timeoutMs / 1000)} 秒内没有响应`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchFollowerCounts(mids, requestProfile = "search-safe") {
   const uniqueMids = [...new Set((mids || []).map(String).filter(value => /^\d+$/.test(value)))].slice(0, 50);
   const cache = await getStorageValue(FOLLOWER_CACHE_KEY);
   const now = Date.now();
   const counts = {};
   const errors = {};
   const missing = [];
+  let rateLimited = false;
+  let retryAfterMs = 0;
 
   for (const mid of uniqueMids) {
     const cached = cache[mid];
@@ -131,15 +484,20 @@ async function fetchFollowerCounts(mids) {
     }
   }
 
-  await mapWithConcurrency(missing, 4, async mid => {
+  const concurrency = requestProfile === "feed-fast" ? 4 : 2;
+  await mapWithConcurrency(missing, concurrency, async mid => {
     try {
-      const data = await apiJson(`/x/relation/stat?vmid=${encodeURIComponent(mid)}`);
+      const data = await apiJson(`/x/relation/stat?vmid=${encodeURIComponent(mid)}`, "https://space.bilibili.com/", "粉丝数接口", requestProfile);
       const value = Number(data?.follower);
       if (!Number.isFinite(value)) throw new Error("接口未返回有效粉丝数");
       counts[mid] = value;
       cache[mid] = {value, fetchedAt: now};
     } catch (error) {
       errors[mid] = String(error?.message || error);
+      if (error?.biliRateLimited) {
+        rateLimited = true;
+        retryAfterMs = Math.max(retryAfterMs, Number(error.retryAfterMs) || 0);
+      }
     }
   });
 
@@ -149,16 +507,18 @@ async function fetchFollowerCounts(mids) {
       .slice(-1000)
   );
   await setStorageValue(FOLLOWER_CACHE_KEY, compactCache);
-  return {counts, errors};
+  return {counts, errors, rateLimited, retryAfterMs, rateLimitEndpoint: rateLimited ? "粉丝数接口" : ""};
 }
 
-async function fetchVideoDetails(bvids) {
+async function fetchVideoDetails(bvids, requestProfile = "search-safe") {
   const uniqueBvids = [...new Set((bvids || []).map(String).filter(value => /^BV[0-9A-Za-z]{10}$/.test(value)))].slice(0, 50);
   const cache = await getStorageValue(DETAIL_CACHE_KEY);
   const now = Date.now();
   const details = {};
   const errors = {};
   const missing = [];
+  let rateLimited = false;
+  let retryAfterMs = 0;
 
   for (const bvid of uniqueBvids) {
     const cached = cache[bvid];
@@ -166,17 +526,24 @@ async function fetchVideoDetails(bvids) {
     else missing.push(bvid);
   }
 
-  await mapWithConcurrency(missing, 4, async bvid => {
+  const concurrency = requestProfile === "feed-fast" ? 4 : 2;
+  await mapWithConcurrency(missing, concurrency, async bvid => {
     try {
-      const data = await apiJson(`/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`);
+      const data = await apiJson(`/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`, "https://www.bilibili.com/", "视频详情接口", requestProfile);
       const value = {
         description: String(data?.View?.desc || ""),
         tags: (data?.Tags || []).map(tag => String(tag?.tag_name || "").trim()).filter(Boolean),
+        categoryId: String(data?.View?.tid || ""),
+        categoryName: String(data?.View?.tname || ""),
       };
       details[bvid] = value;
       cache[bvid] = {value, fetchedAt: now};
     } catch (error) {
       errors[bvid] = String(error?.message || error);
+      if (error?.biliRateLimited) {
+        rateLimited = true;
+        retryAfterMs = Math.max(retryAfterMs, Number(error.retryAfterMs) || 0);
+      }
     }
   });
 
@@ -186,16 +553,26 @@ async function fetchVideoDetails(bvids) {
       .slice(-500)
   );
   await setStorageValue(DETAIL_CACHE_KEY, compactCache);
-  return {details, errors};
+  return {details, errors, rateLimited, retryAfterMs, rateLimitEndpoint: rateLimited ? "视频详情接口" : ""};
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handlers = {
     "bili-filter-fetch-feed": () => fetchFeed(message.options),
-    "bili-filter-fetch-followers": () => fetchFollowerCounts(message.mids),
-    "bili-filter-fetch-details": () => fetchVideoDetails(message.bvids),
+    "bili-filter-search": () => searchVideos(message.options),
+    "bili-filter-fetch-followers": () => fetchFollowerCounts(message.mids, message.requestProfile),
+    "bili-filter-fetch-details": () => fetchVideoDetails(message.bvids, message.requestProfile),
+    "bili-filter-classify-topics": () => classifyTopics(message.options),
+    "bili-filter-rate-limit-status": async () => {
+      await loadRateLimitState();
+      return {
+        rateLimited: rateLimitState.until > Date.now(),
+        retryAfterMs: Math.max(0, Number(rateLimitState.until || 0) - Date.now()),
+        rateLimitEndpoint: rateLimitState.endpoint || "",
+      };
+    },
     "bili-filter-clear-cache": async () => {
-      await chrome.storage.local.remove([FOLLOWER_CACHE_KEY, DETAIL_CACHE_KEY]);
+      await chrome.storage.local.remove([FOLLOWER_CACHE_KEY, DETAIL_CACHE_KEY, LEGACY_DETAIL_CACHE_KEY, TOPIC_CACHE_KEY, CANDIDATE_CACHE_KEY]);
       return {ok: true};
     },
   };
@@ -203,6 +580,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!handler) return false;
   handler()
     .then(result => sendResponse({ok: true, ...result}))
-    .catch(error => sendResponse({ok: false, error: String(error?.message || error)}));
+    .catch(error => sendResponse({
+      ok: false,
+      error: String(error?.message || error),
+      status: Number(error?.status) || 0,
+      endpoint: String(error?.endpoint || ""),
+      retryAfterMs: Math.max(0, Number(error?.retryAfterMs) || 0),
+      biliRateLimited: Boolean(error?.biliRateLimited),
+    }));
   return true;
 });
