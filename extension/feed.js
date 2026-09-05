@@ -6,7 +6,7 @@
   const SETTINGS_KEY = "biliFilterSettingsV2";
   const LEGACY_SETTINGS_KEY = "biliFilterSettingsV1";
   const MARKED_VIDEOS_KEY = "biliFilterMarkedVideosV1";
-  const FILTER_CHECKPOINT_KEY = "biliFilterCheckpointV1";
+  const LEGACY_FILTER_CHECKPOINT_KEY = "biliFilterCheckpointV1";
   const PAGE_SIZE = 20;
   const TARGET_INCREMENT = 20;
   const FEED_MAX_INSPECTED_PER_RUN = 120;
@@ -80,10 +80,7 @@
     noMore: false,
     runId: 0,
     pendingCandidates: [],
-    pausedUntil: 0,
-    resumeTimer: null,
-    resumeTarget: TARGET_INCREMENT,
-    rateLimitEndpoint: "",
+    requestStopped: false,
     initialized: false,
     autoLoadVisible: false,
     autoLoadTimer: null,
@@ -619,64 +616,8 @@
     elements.skeletonGrid.replaceChildren();
   }
 
-  function settingsSignature() {
-    return JSON.stringify(settings);
-  }
-
-  async function saveFilterCheckpoint() {
-    const checkpoint = {
-      version: 1,
-      savedAt: Date.now(),
-      settingsSignature: settingsSignature(),
-      mode: state.mode,
-      query: state.query,
-      total: state.total,
-      batch: state.batch,
-      accepted: state.accepted,
-      pendingCandidates: state.pendingCandidates,
-      seen: [...state.seen],
-      inspected: state.inspected,
-      rejected: state.rejected,
-      causes: [...state.causes],
-      noMore: state.noMore,
-      pausedUntil: state.pausedUntil,
-      resumeTarget: state.resumeTarget,
-      rateLimitEndpoint: state.rateLimitEndpoint,
-    };
-    await storageSet("local", {[FILTER_CHECKPOINT_KEY]: checkpoint});
-  }
-
-  function restoreFilterCheckpoint(checkpoint) {
-    if (!checkpoint || checkpoint.version !== 1) return false;
-    if (Date.now() - Number(checkpoint.savedAt || 0) > 30 * 60 * 1000) return false;
-    if (checkpoint.settingsSignature !== settingsSignature()) return false;
-    state.runId += 1;
-    state.mode = checkpoint.mode === "search" ? "search" : "feed";
-    state.query = String(checkpoint.query || "");
-    state.total = Number.isFinite(Number(checkpoint.total)) ? Number(checkpoint.total) : null;
-    state.batch = Math.max(1, Number(checkpoint.batch) || 1);
-    state.accepted = Array.isArray(checkpoint.accepted) ? checkpoint.accepted : [];
-    state.pendingCandidates = Array.isArray(checkpoint.pendingCandidates) ? checkpoint.pendingCandidates : [];
-    state.seen = new Set(Array.isArray(checkpoint.seen) ? checkpoint.seen : []);
-    state.inspected = Math.max(0, Number(checkpoint.inspected) || 0);
-    state.rejected = Math.max(0, Number(checkpoint.rejected) || 0);
-    state.causes = new Map(Array.isArray(checkpoint.causes) ? checkpoint.causes : []);
-    state.noMore = Boolean(checkpoint.noMore);
-    state.pausedUntil = Math.max(0, Number(checkpoint.pausedUntil) || 0);
-    state.resumeTarget = Math.max(TARGET_INCREMENT, Number(checkpoint.resumeTarget) || TARGET_INCREMENT);
-    state.rateLimitEndpoint = String(checkpoint.rateLimitEndpoint || "B站接口");
-    state.loading = false;
-    elements.searchInput.value = state.query;
-    elements.videoGrid.replaceChildren(...state.accepted.map(createVideoCard));
-    elements.emptyState.hidden = state.accepted.length > 0;
-    updateModeUi();
-    updateStats();
-    return true;
-  }
-
   function resetFeed(options = {}) {
-    if (options.clearCheckpoint !== false) storageRemove("local", FILTER_CHECKPOINT_KEY).catch(() => undefined);
-    if (state.resumeTimer) clearTimeout(state.resumeTimer);
+    if (options.clearCheckpoint !== false) storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
     if (state.autoLoadTimer) clearTimeout(state.autoLoadTimer);
     state.runId += 1;
     state.batch = 1;
@@ -689,9 +630,7 @@
     state.total = null;
     state.loading = false;
     state.pendingCandidates = [];
-    state.pausedUntil = 0;
-    state.resumeTimer = null;
-    state.rateLimitEndpoint = "";
+    state.requestStopped = false;
     state.autoLoadTimer = null;
     elements.videoGrid.replaceChildren();
     elements.emptyState.hidden = true;
@@ -699,42 +638,13 @@
     updateStats();
   }
 
-  function scheduleRateLimitResume(runId) {
-    if (state.resumeTimer) clearTimeout(state.resumeTimer);
-    const tick = () => {
-      if (runId !== state.runId) return;
-      const remaining = Math.max(0, state.pausedUntil - Date.now());
-      if (!remaining) {
-        state.pausedUntil = 0;
-        state.resumeTimer = null;
-        elements.loadMoreButton.disabled = false;
-        elements.refreshButton.disabled = false;
-        elements.searchSubmit.disabled = false;
-        elements.loadMoreButton.textContent = state.mode === "search" ? "自动加载更多搜索结果" : "自动加载更多视频";
-        fillFeed(state.resumeTarget);
-        return;
-      }
-      const seconds = Math.ceil(remaining / 1000);
-      elements.loadMoreButton.disabled = true;
-      elements.refreshButton.disabled = true;
-      elements.searchSubmit.disabled = true;
-      elements.loadMoreButton.textContent = `风控冷却 ${seconds} 秒后继续`;
-      elements.statusText.textContent = `${state.rateLimitEndpoint || "B站接口"}触发 HTTP 412；已保留当前结果和 ${state.pendingCandidates.length} 个待处理候选，${seconds} 秒后自动继续。`;
-      state.resumeTimer = setTimeout(tick, Math.min(1000, remaining));
-    };
-    tick();
-  }
-
-  function pauseForRateLimit(rateLimit, pending, targetCount, runId) {
-    state.pendingCandidates = pending || [];
-    state.rateLimitEndpoint = rateLimit?.endpoint || "B站接口";
-    state.pausedUntil = Date.now() + Math.max(1000, Number(rateLimit?.retryAfterMs) || 30000);
-    state.resumeTarget = targetCount;
-    elements.loadMoreButton.disabled = true;
-    elements.refreshButton.disabled = true;
-    elements.searchSubmit.disabled = true;
-    saveFilterCheckpoint().catch(error => console.warn("保存筛选断点失败：", error));
-    scheduleRateLimitResume(runId);
+  function stopForRateLimit(rateLimit) {
+    const endpoint = rateLimit?.endpoint || "B站接口";
+    state.pendingCandidates = [];
+    state.noMore = true;
+    state.requestStopped = true;
+    elements.statusText.textContent = `${endpoint}返回 HTTP 412；本地冷却已关闭，本轮已停止。可点击“${state.mode === "search" ? "重新搜索" : "换一批"}”立即重试。`;
+    storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
   }
 
   function recordFinalDecision(video, result) {
@@ -981,11 +891,6 @@
 
   async function fillFeed(targetCount) {
     if (state.loading || (state.noMore && !state.pendingCandidates.length)) return;
-    if (state.pausedUntil > Date.now()) {
-      state.resumeTarget = Math.max(state.resumeTarget, targetCount);
-      scheduleRateLimitResume(state.runId);
-      return;
-    }
     state.loading = true;
     const runId = state.runId;
     const acceptedAtStart = state.accepted.length;
@@ -1006,7 +911,7 @@
           state.pendingCandidates = [];
           const pendingResult = await enrichAndFilter(pending, runId);
           if (pendingResult?.rateLimit) {
-            pauseForRateLimit(pendingResult.rateLimit, pendingResult.pending, targetCount, runId);
+            stopForRateLimit(pendingResult.rateLimit);
             break;
           }
           continue;
@@ -1040,7 +945,7 @@
         inspectedThisRun += fresh.length;
         const filterResult = await enrichAndFilter(fresh, runId);
         if (filterResult?.rateLimit) {
-          pauseForRateLimit(filterResult.rateLimit, filterResult.pending, targetCount, runId);
+          stopForRateLimit(filterResult.rateLimit);
           break;
         }
         if (runId === state.runId && state.accepted.length < targetCount) {
@@ -1049,7 +954,7 @@
       }
 
       if (runId !== state.runId) return;
-      if (state.pausedUntil > Date.now()) {
+      if (state.requestStopped) {
         elements.emptyState.hidden = state.accepted.length > 0;
         return;
       }
@@ -1061,11 +966,11 @@
           ? `搜索“${state.query}”并检查了 ${inspectedThisRun} 个候选，当前门槛下通过结果较少。`
           : `本轮检查了 ${inspectedThisRun} 个候选，当前门槛下通过结果较少。`;
       }
-      storageRemove("local", FILTER_CHECKPOINT_KEY).catch(() => undefined);
+      storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
     } catch (error) {
       if (runId !== state.runId) return;
       if (error.biliRateLimited) {
-        pauseForRateLimit({endpoint: error.endpoint, retryAfterMs: error.retryAfterMs}, state.pendingCandidates, targetCount, runId);
+        stopForRateLimit({endpoint: error.endpoint});
       } else {
         elements.statusText.textContent = `加载失败：${error.message}`;
       }
@@ -1074,11 +979,10 @@
       if (runId === state.runId) {
         state.loading = false;
         hideSkeletons();
-        const cooling = state.pausedUntil > Date.now();
-        elements.loadMoreButton.disabled = cooling;
-        elements.refreshButton.disabled = cooling;
-        elements.searchSubmit.disabled = cooling;
-        if (!cooling && state.accepted.length > acceptedAtStart) scheduleAutoLoad();
+        elements.loadMoreButton.disabled = false;
+        elements.refreshButton.disabled = false;
+        elements.searchSubmit.disabled = false;
+        if (state.accepted.length > acceptedAtStart) scheduleAutoLoad();
       }
     }
   }
@@ -1099,10 +1003,10 @@
 
   function scheduleAutoLoad() {
     if (state.autoLoadTimer || !state.initialized || !state.autoLoadVisible || state.loading) return;
-    if (state.pausedUntil > Date.now() || (state.noMore && !state.pendingCandidates.length)) return;
+    if (state.noMore && !state.pendingCandidates.length) return;
     state.autoLoadTimer = setTimeout(() => {
       state.autoLoadTimer = null;
-      if (!state.autoLoadVisible || state.loading || state.pausedUntil > Date.now()) return;
+      if (!state.autoLoadVisible || state.loading) return;
       fillFeed(state.accepted.length + TARGET_INCREMENT);
     }, 180);
   }
@@ -1185,10 +1089,9 @@
   elements.exportMarkedButton.addEventListener("click", exportDiscussionData);
 
   async function initialize() {
-    const [stored, storedMarked, checkpoint] = await Promise.all([
+    const [stored, storedMarked] = await Promise.all([
       storageGet("local", SETTINGS_KEY),
       storageGet("local", MARKED_VIDEOS_KEY),
-      storageGet("local", FILTER_CHECKPOINT_KEY),
     ]);
     const legacy = stored ? null : await storageGet("sync", LEGACY_SETTINGS_KEY);
     settings = Core.normalizeSettings(stored || legacy || Core.DEFAULT_SETTINGS);
@@ -1196,17 +1099,9 @@
     if (!stored) await storageSet("local", {[SETTINGS_KEY]: settings});
     writeSettingsForm(settings);
     renderMarkedLibrary();
-    if (restoreFilterCheckpoint(checkpoint)) {
-      if (state.pausedUntil > Date.now()) scheduleRateLimitResume(state.runId);
-      else {
-        state.pausedUntil = 0;
-        await fillFeed(state.resumeTarget);
-      }
-    } else {
-      await storageRemove("local", FILTER_CHECKPOINT_KEY).catch(() => undefined);
-      resetFeed({clearCheckpoint: false});
-      await fillFeed(TARGET_INCREMENT);
-    }
+    await storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
+    resetFeed({clearCheckpoint: false});
+    await fillFeed(TARGET_INCREMENT);
     state.initialized = true;
     scheduleAutoLoad();
   }

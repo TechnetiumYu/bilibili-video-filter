@@ -6,7 +6,6 @@ const DETAIL_CACHE_KEY = "biliFilterDetailCacheV2";
 const LEGACY_DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
 const TOPIC_CACHE_KEY = "biliFilterTopicCacheV1";
 const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV1";
-const RATE_LIMIT_KEY = "biliFilterRateLimitV3";
 const FOLLOWER_TTL_MS = 24 * 60 * 60 * 1000;
 const DETAIL_TTL_MS = 24 * 60 * 60 * 1000;
 const TOPIC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -22,8 +21,6 @@ let biliRequestLanes = Array.from({length: BILI_MAX_CONCURRENCY}, () => Promise.
 let biliStartQueue = Promise.resolve();
 let nextBiliLane = 0;
 let nextBiliRequestAt = 0;
-let rateLimitState = {strikes: 0, lastTriggeredAt: 0, until: 0, endpoint: ""};
-let rateLimitLoaded = false;
 
 class BiliApiError extends Error {
   constructor(message, options = {}) {
@@ -44,51 +41,11 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
 
-async function loadRateLimitState() {
-  if (rateLimitLoaded) return rateLimitState;
-  const stored = await getStorageValue(RATE_LIMIT_KEY);
-  if (stored && typeof stored === "object") rateLimitState = {...rateLimitState, ...stored};
-  rateLimitLoaded = true;
-  return rateLimitState;
-}
-
-async function saveRateLimitState() {
-  await setStorageValue(RATE_LIMIT_KEY, rateLimitState);
-}
-
-async function activateRateLimit(endpoint) {
-  await loadRateLimitState();
-  const now = Date.now();
-  const active = BiliRequestPolicy.rateLimitStatus(rateLimitState, now);
-  if (active.rateLimited) return active.retryAfterMs;
-  const next = BiliRequestPolicy.nextRateLimitState(rateLimitState, now, endpoint);
-  const waitMs = next.waitMs;
-  rateLimitState = {strikes: next.strikes, lastTriggeredAt: next.lastTriggeredAt, until: next.until, endpoint: next.endpoint};
-  await saveRateLimitState();
-  return waitMs;
-}
-
 function acquireBiliStartSlot() {
   const start = biliStartQueue.then(async () => {
-    await loadRateLimitState();
     const now = Date.now();
-    if (rateLimitState.until > now) {
-      throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
-        status: 412,
-        endpoint: rateLimitState.endpoint,
-        retryAfterMs: rateLimitState.until - now,
-      });
-    }
     const spacing = Math.max(0, nextBiliRequestAt - now);
     if (spacing) await delay(spacing);
-    const afterWait = Date.now();
-    if (rateLimitState.until > afterWait) {
-      throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
-        status: 412,
-        endpoint: rateLimitState.endpoint,
-        retryAfterMs: rateLimitState.until - afterWait,
-      });
-    }
     nextBiliRequestAt = Date.now() + BILI_REQUEST_INTERVAL_MS + Math.floor(Math.random() * 100);
   });
   biliStartQueue = start.catch(() => undefined);
@@ -106,15 +63,6 @@ function scheduleBiliRequest(worker) {
 }
 
 async function runFastBiliRequest(worker) {
-  await loadRateLimitState();
-  const now = Date.now();
-  if (rateLimitState.until > now) {
-    throw new BiliApiError(`${rateLimitState.endpoint || "B站接口"}触发风控，正在冷却`, {
-      status: 412,
-      endpoint: rateLimitState.endpoint,
-      retryAfterMs: rateLimitState.until - now,
-    });
-  }
   return worker();
 }
 
@@ -126,18 +74,15 @@ async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = 
       referrer,
     });
     if (!response.ok) {
-      const retryAfterMs = response.status === 412 ? await activateRateLimit(endpoint) : 0;
       throw new BiliApiError(`${endpoint}返回 HTTP ${response.status}`, {
         status: response.status,
         endpoint,
-        retryAfterMs,
       });
     }
     const payload = await response.json();
     if (payload.code !== 0) {
       if (Number(payload.code) === -412 || Number(payload.code) === 412) {
-        const retryAfterMs = await activateRateLimit(endpoint);
-        throw new BiliApiError(payload.message || `${endpoint}触发风控`, {status: 412, endpoint, retryAfterMs});
+        throw new BiliApiError(payload.message || `${endpoint}触发风控`, {status: 412, endpoint});
       }
       throw new BiliApiError(payload.message || `${endpoint}错误 ${payload.code}`, {endpoint});
     }
@@ -525,18 +470,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     "bili-filter-fetch-details": () => fetchVideoDetails(message.bvids, message.requestProfile),
     "bili-filter-classify-topics": () => classifyTopics(message.options),
     "bili-filter-rate-limit-status": async () => {
-      await loadRateLimitState();
       return {
-        rateLimited: rateLimitState.until > Date.now(),
-        retryAfterMs: Math.max(0, Number(rateLimitState.until || 0) - Date.now()),
-        rateLimitEndpoint: rateLimitState.endpoint || "",
+        rateLimited: false,
+        retryAfterMs: 0,
+        rateLimitEndpoint: "",
       };
     },
     "bili-filter-clear-cache": async () => {
-      rateLimitState = {strikes: 0, lastTriggeredAt: 0, until: 0, endpoint: ""};
-      rateLimitLoaded = true;
       nextBiliRequestAt = 0;
-      await chrome.storage.local.remove([FOLLOWER_CACHE_KEY, DETAIL_CACHE_KEY, LEGACY_DETAIL_CACHE_KEY, TOPIC_CACHE_KEY, CANDIDATE_CACHE_KEY, RATE_LIMIT_KEY]);
+      await chrome.storage.local.remove([
+        FOLLOWER_CACHE_KEY,
+        DETAIL_CACHE_KEY,
+        LEGACY_DETAIL_CACHE_KEY,
+        TOPIC_CACHE_KEY,
+        CANDIDATE_CACHE_KEY,
+        "biliFilterRateLimitV2",
+        "biliFilterRateLimitV3",
+      ]);
       return {ok: true};
     },
   };
