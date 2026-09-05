@@ -931,7 +931,7 @@
         state.total = Number.isFinite(Number(response.total)) ? Number(response.total) : state.total;
         const cacheLabel = response.cacheMode === "fresh" ? " · 本地缓存" : response.cacheMode === "stale" ? " · 风控缓存" : "";
         elements.sourceBadge.textContent = response.source === "search"
-          ? `搜索候选${state.total === null ? "" : ` ${formatCount(state.total)} 条`}${cacheLabel}`
+          ? `搜索候选${state.total === null ? "" : ` ${formatCount(state.total)} 条`} · ${response.searchProvider === "wbi" ? "WBI" : "备用通道"}${cacheLabel}`
           : `${response.source === "recommend" ? "个性化推荐候选" : "热门视频候选（兜底）"}${cacheLabel}`;
         const fresh = (response.items || []).filter(video => {
           if (state.seen.has(video.bvid)) return false;

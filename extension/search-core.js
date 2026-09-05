@@ -55,10 +55,14 @@
 
   function normalizeResponse(data, page) {
     const safePage = Math.max(1, Number(page) || 1);
-    const totalPages = Math.max(0, Number(data?.numPages) || 0);
+    const resultGroups = Array.isArray(data?.result) ? data.result : [];
+    const videoGroup = resultGroups.find(group => group?.result_type === "video" && Array.isArray(group.data));
+    const rawItems = videoGroup ? videoGroup.data : resultGroups;
+    const pageInfo = data?.pageinfo?.video;
+    const totalPages = Math.max(0, Number(pageInfo?.pages ?? data?.numPages) || 0);
     return {
-      items: (Array.isArray(data?.result) ? data.result : []).map(normalizeItem).filter(Boolean),
-      total: Math.max(0, Number(data?.numResults) || 0),
+      items: rawItems.map(normalizeItem).filter(Boolean),
+      total: Math.max(0, Number(pageInfo?.numResults ?? data?.numResults) || 0),
       noMore: totalPages === 0 || safePage >= totalPages,
     };
   }

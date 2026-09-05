@@ -1,16 +1,18 @@
-importScripts("topic-classifier.js", "request-policy.js", "search-core.js");
+importScripts("topic-classifier.js", "request-policy.js", "search-core.js", "wbi.js");
 
 const BILI_API = "https://api.bilibili.com";
 const FOLLOWER_CACHE_KEY = "biliFilterFollowerCacheV1";
 const DETAIL_CACHE_KEY = "biliFilterDetailCacheV2";
 const LEGACY_DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
 const TOPIC_CACHE_KEY = "biliFilterTopicCacheV1";
-const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV1";
+const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV2";
+const LEGACY_CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV1";
 const FOLLOWER_TTL_MS = 24 * 60 * 60 * 1000;
 const DETAIL_TTL_MS = 24 * 60 * 60 * 1000;
 const TOPIC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CANDIDATE_FRESH_MS = 2 * 60 * 1000;
 const CANDIDATE_STALE_MS = 30 * 60 * 1000;
+const WBI_KEY_TTL_MS = 6 * 60 * 60 * 1000;
 const CLASSIFIER_BATCH_SIZE = 20;
 const TOPIC_TAXONOMY_VERSION = 1;
 const TOPIC_PROMPT_VERSION = 1;
@@ -21,6 +23,7 @@ let biliRequestLanes = Array.from({length: BILI_MAX_CONCURRENCY}, () => Promise.
 let biliStartQueue = Promise.resolve();
 let nextBiliLane = 0;
 let nextBiliRequestAt = 0;
+let wbiKeyCache = null;
 
 class BiliApiError extends Error {
   constructor(message, options = {}) {
@@ -170,25 +173,69 @@ async function searchVideosUncached({query = "", page = 1, pageSize = 20} = {}) 
   if (!safeQuery) throw new Error("请输入搜索关键词");
   const safePage = Math.max(1, Math.min(1000, Number(page) || 1));
   const safeSize = Math.max(1, Math.min(30, Number(pageSize) || 20));
-  const params = new URLSearchParams({
+  const params = {
     search_type: "video",
     keyword: safeQuery,
     page: String(safePage),
     page_size: String(safeSize),
-  });
-  const data = await apiJson(
-    `/x/web-interface/search/type?${params}`,
-    "https://search.bilibili.com/",
-    "搜索接口",
-    "search-safe",
-    "omit"
-  );
+    platform: "pc",
+    web_location: "1430654",
+  };
+  let data;
+  let provider = "wbi";
+  let primaryError;
+  try {
+    const keys = await getWbiKeys();
+    const signed = BiliWbi.signParams(params, keys.imgKey, keys.subKey);
+    data = await apiJson(
+      `/x/web-interface/wbi/search/type?${signed.queryString}`,
+      "https://search.bilibili.com/",
+      "WBI搜索接口",
+      "search-safe",
+      "omit"
+    );
+    if (data?.v_voucher) throw new BiliApiError("WBI搜索接口要求额外验证", {status: 412, endpoint: "WBI搜索接口"});
+  } catch (error) {
+    primaryError = error;
+    wbiKeyCache = null;
+    provider = "all-v2";
+    try {
+      const fallbackParams = new URLSearchParams({keyword: safeQuery, page: String(safePage)});
+      data = await apiJson(
+        `/x/web-interface/search/all/v2?${fallbackParams}`,
+        "https://search.bilibili.com/",
+        "备用搜索接口",
+        "search-safe",
+        "omit"
+      );
+    } catch (fallbackError) {
+      throw new BiliApiError(
+        `新版搜索失败：${primaryError?.message || primaryError}；备用搜索失败：${fallbackError?.message || fallbackError}`,
+        {status: fallbackError?.status, endpoint: fallbackError?.endpoint || "备用搜索接口"}
+      );
+    }
+  }
   const normalized = BiliSearchCore.normalizeResponse(data, safePage);
+  if (!normalized.items.length && normalized.total > 0) {
+    throw new BiliApiError(`${provider === "wbi" ? "WBI" : "备用"}搜索响应缺少视频结果`, {endpoint: "搜索接口"});
+  }
   return {
     source: "search",
+    searchProvider: provider,
     query: safeQuery,
     ...normalized,
   };
+}
+
+async function getWbiKeys() {
+  const now = Date.now();
+  if (wbiKeyCache?.expiresAt > now) return wbiKeyCache;
+  const data = await apiJson("/x/web-interface/nav", "https://www.bilibili.com/", "WBI密钥接口", "search-safe", "omit");
+  const imgKey = BiliWbi.keyFromUrl(data?.wbi_img?.img_url);
+  const subKey = BiliWbi.keyFromUrl(data?.wbi_img?.sub_url);
+  if (!imgKey || !subKey) throw new BiliApiError("B站未返回有效 WBI 密钥", {endpoint: "WBI密钥接口"});
+  wbiKeyCache = {imgKey, subKey, expiresAt: now + WBI_KEY_TTL_MS};
+  return wbiKeyCache;
 }
 
 async function cachedCandidates(key, loader) {
@@ -478,12 +525,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     },
     "bili-filter-clear-cache": async () => {
       nextBiliRequestAt = 0;
+      wbiKeyCache = null;
       await chrome.storage.local.remove([
         FOLLOWER_CACHE_KEY,
         DETAIL_CACHE_KEY,
         LEGACY_DETAIL_CACHE_KEY,
         TOPIC_CACHE_KEY,
         CANDIDATE_CACHE_KEY,
+        LEGACY_CANDIDATE_CACHE_KEY,
         "biliFilterRateLimitV2",
         "biliFilterRateLimitV3",
       ]);

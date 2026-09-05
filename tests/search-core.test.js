@@ -41,3 +41,21 @@ test("搜索分页响应保留总数并正确判断末页", () => {
   assert.equal(response.noMore, true);
   assert.equal(response.items.length, 1);
 });
+
+test("备用 all/v2 搜索响应可以提取视频分组", () => {
+  const response = Search.normalizeResponse({
+    numResults: 9999,
+    numPages: 50,
+    pageinfo: {video: {numResults: 41, pages: 3}},
+    result: [
+      {result_type: "bili_user", data: [{type: "bili_user", mid: 1}]},
+      {result_type: "video", data: [{
+        type: "video", bvid: "BV1234567890", mid: 42, description: "简介", tag: "标签",
+      }]},
+    ],
+  }, 2);
+  assert.equal(response.total, 41);
+  assert.equal(response.noMore, false);
+  assert.equal(response.items.length, 1);
+  assert.equal(response.items[0].bvid, "BV1234567890");
+});

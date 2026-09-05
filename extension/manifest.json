@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "B站视频过滤器",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "高速过滤B站推荐流、稳妥过滤搜索结果，支持无限滚动、话题门槛和标记样本。",
   "permissions": ["storage"],
   "host_permissions": [
