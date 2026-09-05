@@ -1,4 +1,4 @@
-importScripts("topic-classifier.js", "request-policy.js");
+importScripts("topic-classifier.js", "request-policy.js", "search-core.js");
 
 const BILI_API = "https://api.bilibili.com";
 const FOLLOWER_CACHE_KEY = "biliFilterFollowerCacheV1";
@@ -6,7 +6,7 @@ const DETAIL_CACHE_KEY = "biliFilterDetailCacheV2";
 const LEGACY_DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
 const TOPIC_CACHE_KEY = "biliFilterTopicCacheV1";
 const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV1";
-const RATE_LIMIT_KEY = "biliFilterRateLimitV2";
+const RATE_LIMIT_KEY = "biliFilterRateLimitV3";
 const FOLLOWER_TTL_MS = 24 * 60 * 60 * 1000;
 const DETAIL_TTL_MS = 24 * 60 * 60 * 1000;
 const TOPIC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -118,10 +118,10 @@ async function runFastBiliRequest(worker) {
   return worker();
 }
 
-async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = "B站接口", requestProfile = "search-safe") {
+async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = "B站接口", requestProfile = "search-safe", credentials = "include") {
   const execute = async () => {
     const response = await fetch(`${BILI_API}${path}`, {
-      credentials: "include",
+      credentials,
       headers: {Accept: "application/json"},
       referrer,
     });
@@ -144,26 +144,6 @@ async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = 
     return payload.data;
   };
   return requestProfile === "feed-fast" ? runFastBiliRequest(execute) : scheduleBiliRequest(execute);
-}
-
-function stripMarkup(value) {
-  const entities = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'"};
-  return String(value || "")
-    .replace(/<[^>]*>/g, "")
-    .replace(/&(amp|lt|gt|quot|#39);/g, entity => entities[entity] || entity)
-    .trim();
-}
-
-function parseDuration(value) {
-  if (Number.isFinite(Number(value))) return Math.max(0, Number(value));
-  const parts = String(value || "").split(":").map(Number);
-  if (!parts.length || parts.some(part => !Number.isFinite(part) || part < 0)) return 0;
-  return parts.reduce((total, part) => total * 60 + part, 0);
-}
-
-function absoluteImageUrl(value) {
-  const text = String(value || "");
-  return text.startsWith("//") ? `https:${text}` : text;
 }
 
 function normalizeRecommendedItem(item) {
@@ -213,29 +193,6 @@ function normalizePopularItem(item) {
   };
 }
 
-function normalizeSearchItem(item) {
-  if (!item?.bvid || !item?.mid) return null;
-  return {
-    bvid: item.bvid,
-    title: stripMarkup(item.title),
-    description: stripMarkup(item.description || item.desc),
-    tags: String(item.tag || "").split(",").map(tag => tag.trim()).filter(Boolean),
-    uploaderId: String(item.mid),
-    uploaderName: stripMarkup(item.author),
-    uploaderAvatar: absoluteImageUrl(item.upic),
-    coverUrl: absoluteImageUrl(item.pic || item.cover),
-    duration: parseDuration(item.duration),
-    publishTime: Number(item.pubdate) || 0,
-    categoryId: String(item.typeid || item.tid || ""),
-    categoryName: stripMarkup(item.typename || item.tname),
-    playCount: Number(item.play) || 0,
-    likeCount: Number(item.like) || 0,
-    danmakuCount: Number(item.video_review ?? item.danmaku) || 0,
-    url: item.arcurl || `https://www.bilibili.com/video/${item.bvid}`,
-    detailsAvailable: false,
-  };
-}
-
 async function fetchFeedUncached({batch = 1, pageSize = 20, requestProfile = "feed-fast"} = {}) {
   const safeBatch = Math.max(1, Math.min(1000, Number(batch) || 1));
   const safeSize = Math.max(1, Math.min(30, Number(pageSize) || 20));
@@ -255,7 +212,7 @@ async function fetchFeedUncached({batch = 1, pageSize = 20, requestProfile = "fe
     console.warn("个性化推荐接口不可用，改用热门视频：", error);
   }
 
-  const data = await apiJson(`/x/web-interface/popular?ps=${safeSize}&pn=${safeBatch}`, "https://www.bilibili.com/", "热门接口", requestProfile);
+  const data = await apiJson(`/x/web-interface/popular?ps=${safeSize}&pn=${safeBatch}`, "https://www.bilibili.com/", "热门接口", requestProfile, "omit");
   return {
     source: "popular",
     items: (data?.list || []).map(normalizePopularItem).filter(Boolean),
@@ -274,14 +231,18 @@ async function searchVideosUncached({query = "", page = 1, pageSize = 20} = {}) 
     page: String(safePage),
     page_size: String(safeSize),
   });
-  const data = await apiJson(`/x/web-interface/search/type?${params}`, "https://search.bilibili.com/", "搜索接口");
-  const totalPages = Math.max(0, Number(data?.numPages) || 0);
+  const data = await apiJson(
+    `/x/web-interface/search/type?${params}`,
+    "https://search.bilibili.com/",
+    "搜索接口",
+    "search-safe",
+    "omit"
+  );
+  const normalized = BiliSearchCore.normalizeResponse(data, safePage);
   return {
     source: "search",
     query: safeQuery,
-    items: (data?.result || []).map(normalizeSearchItem).filter(Boolean),
-    total: Math.max(0, Number(data?.numResults) || 0),
-    noMore: totalPages === 0 || safePage >= totalPages,
+    ...normalized,
   };
 }
 
@@ -487,7 +448,7 @@ async function fetchFollowerCounts(mids, requestProfile = "search-safe") {
   const concurrency = requestProfile === "feed-fast" ? 4 : 2;
   await mapWithConcurrency(missing, concurrency, async mid => {
     try {
-      const data = await apiJson(`/x/relation/stat?vmid=${encodeURIComponent(mid)}`, "https://space.bilibili.com/", "粉丝数接口", requestProfile);
+      const data = await apiJson(`/x/relation/stat?vmid=${encodeURIComponent(mid)}`, "https://space.bilibili.com/", "粉丝数接口", requestProfile, "omit");
       const value = Number(data?.follower);
       if (!Number.isFinite(value)) throw new Error("接口未返回有效粉丝数");
       counts[mid] = value;
@@ -529,7 +490,7 @@ async function fetchVideoDetails(bvids, requestProfile = "search-safe") {
   const concurrency = requestProfile === "feed-fast" ? 4 : 2;
   await mapWithConcurrency(missing, concurrency, async bvid => {
     try {
-      const data = await apiJson(`/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`, "https://www.bilibili.com/", "视频详情接口", requestProfile);
+      const data = await apiJson(`/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`, "https://www.bilibili.com/", "视频详情接口", requestProfile, "omit");
       const value = {
         description: String(data?.View?.desc || ""),
         tags: (data?.Tags || []).map(tag => String(tag?.tag_name || "").trim()).filter(Boolean),
@@ -572,7 +533,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       };
     },
     "bili-filter-clear-cache": async () => {
-      await chrome.storage.local.remove([FOLLOWER_CACHE_KEY, DETAIL_CACHE_KEY, LEGACY_DETAIL_CACHE_KEY, TOPIC_CACHE_KEY, CANDIDATE_CACHE_KEY]);
+      rateLimitState = {strikes: 0, lastTriggeredAt: 0, until: 0, endpoint: ""};
+      rateLimitLoaded = true;
+      nextBiliRequestAt = 0;
+      await chrome.storage.local.remove([FOLLOWER_CACHE_KEY, DETAIL_CACHE_KEY, LEGACY_DETAIL_CACHE_KEY, TOPIC_CACHE_KEY, CANDIDATE_CACHE_KEY, RATE_LIMIT_KEY]);
       return {ok: true};
     },
   };

@@ -873,8 +873,9 @@
     for (let offset = 0; offset < cheapSurvivors.length; offset += ENRICH_BATCH_SIZE) {
       const group = cheapSurvivors.slice(offset, offset + ENRICH_BATCH_SIZE);
       const remaining = cheapSurvivors.slice(offset + ENRICH_BATCH_SIZE);
-      const detailResult = needDetails
-        ? await runtimeMessage({type: "bili-filter-fetch-details", bvids: group.map(video => video.bvid), requestProfile: "search-safe"})
+      const missingDetailCandidates = needDetails ? group.filter(video => video.detailsAvailable !== true) : [];
+      const detailResult = missingDetailCandidates.length
+        ? await runtimeMessage({type: "bili-filter-fetch-details", bvids: missingDetailCandidates.map(video => video.bvid), requestProfile: "search-safe"})
         : {details: {}, errors: {}, rateLimited: false};
       if (runId !== state.runId) return {pending: []};
       if (detailResult.rateLimited) {
