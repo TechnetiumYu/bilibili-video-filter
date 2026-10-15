@@ -154,6 +154,8 @@
       records.clear();
     }
     activate();
+    if (mode === "feed") globalThis.BiliHomeLayout.preserve(document);
+    else globalThis.BiliHomeLayout.clear(document);
     if (!mode) return;
     mountPanel();
     const found = new Set(Adapter.cards(document));
@@ -235,6 +237,9 @@
   mutations.observe(document, {subtree: true, childList: true, attributes: true, attributeFilter: ["href"]});
   // pushState 不触发 popstate；兼容 B站 SPA 路由以及整页导航。
   addEventListener("popstate", scan);
+  addEventListener("resize", () => {
+    if (!scanTimer) scanTimer = setTimeout(scan, 60);
+  });
   setInterval(() => { if (route !== location.href) scan(); }, 500);
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;

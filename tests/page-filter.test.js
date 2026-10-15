@@ -158,7 +158,7 @@ function contentPage(handler) {
     }},
     storage: {local: {get: async () => ({})}, onChanged: {addListener(fn) { changes.push(fn); }}},
   };
-  for (const file of ["page-adapter.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
+  for (const file of ["page-adapter.js", "home-layout.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
   const addCard = bvid => {
     const card = win.document.createElement("div");
     card.className = "feed-card";

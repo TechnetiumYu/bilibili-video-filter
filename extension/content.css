@@ -1,5 +1,10 @@
 /* document_start 时开始遮住目标卡片，避免未检查的视频先闪现。 */
-html[data-bvf-active] :is(.bili-video-card, .video-item, .video-list-item):not([data-bvf-state="accepted"]):not([data-bvf-approved]) {
+html[data-bvf-active] .recommended-swipe[data-bvf-home-layout] {
+  height: var(--bvf-home-height) !important;
+  min-height: var(--bvf-home-height) !important;
+  align-self: start;
+}
+html[data-bvf-active] :is(.bili-video-card, .video-item, .video-list-item):not([data-bvf-state="accepted"]):not([data-bvf-approved]):not(.recommended-swipe *):not(.bili-banner *):not(.bili-header__banner *) {
   visibility: hidden !important;
 }
 html[data-bvf-active] [data-bvf-state="pending"],

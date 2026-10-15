@@ -24,6 +24,7 @@
   function cards(document) {
     const unique = new Set();
     for (const card of document.querySelectorAll(CARD_SELECTOR)) {
+      if (card.closest(".recommended-swipe, .bili-banner, .bili-header__banner")) continue;
       // 首页 feed-card、搜索 video-list-item 是网格实际占位，隐藏外层才能收拢空位。
       unique.add(card.closest(".feed-card, .video-list-item, .video-item") || card);
     }
