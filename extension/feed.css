@@ -14,6 +14,12 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; color: var(--ink); background: #fafbfc; }
+.settings-only .search-form, .settings-only #sourceBadge,
+.settings-only #refreshButton, .settings-only .feed-section { display: none !important; }
+.settings-only .layout { display: block; max-width: 880px; margin: 0 auto; }
+.settings-only .settings-panel { position: static; max-height: none; }
+.settings-intro { color: #61666d; font-size: 13px; line-height: 1.8; }
+.settings-save-status { color: #198754; font-size: 13px; }
 button, input, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 

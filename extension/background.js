@@ -1,8 +1,8 @@
-importScripts("topic-classifier.js", "request-policy.js", "search-core.js", "wbi.js");
+importScripts("topic-classifier.js", "request-policy.js", "search-core.js", "wbi.js", "filter-core.js", "marked-core.js");
 
 const BILI_API = "https://api.bilibili.com";
 const FOLLOWER_CACHE_KEY = "biliFilterFollowerCacheV1";
-const DETAIL_CACHE_KEY = "biliFilterDetailCacheV2";
+const DETAIL_CACHE_KEY = "biliFilterDetailCacheV3";
 const LEGACY_DETAIL_CACHE_KEY = "biliFilterDetailCacheV1";
 const TOPIC_CACHE_KEY = "biliFilterTopicCacheV1";
 const CANDIDATE_CACHE_KEY = "biliFilterCandidateCacheV2";
@@ -37,7 +37,7 @@ class BiliApiError extends Error {
 }
 
 chrome.action.onClicked.addListener(() => {
-  chrome.tabs.create({url: chrome.runtime.getURL("feed.html")});
+  chrome.runtime.openOptionsPage();
 });
 
 function delay(ms) {
@@ -75,6 +75,7 @@ async function apiJson(path, referrer = "https://www.bilibili.com/", endpoint = 
       credentials,
       headers: {Accept: "application/json"},
       referrer,
+      signal: AbortSignal.timeout(20000),
     });
     if (!response.ok) {
       throw new BiliApiError(`${endpoint}返回 HTTP ${response.status}`, {
@@ -441,7 +442,7 @@ async function fetchFollowerCounts(mids, requestProfile = "search-safe") {
   await mapWithConcurrency(missing, concurrency, async mid => {
     try {
       const data = await apiJson(`/x/relation/stat?vmid=${encodeURIComponent(mid)}`, "https://space.bilibili.com/", "粉丝数接口", requestProfile, "omit");
-      const value = Number(data?.follower);
+      const value = data?.follower;
       if (!Number.isFinite(value)) throw new Error("接口未返回有效粉丝数");
       counts[mid] = value;
       cache[mid] = {value, fetchedAt: now};
@@ -483,11 +484,29 @@ async function fetchVideoDetails(bvids, requestProfile = "search-safe") {
   await mapWithConcurrency(missing, concurrency, async bvid => {
     try {
       const data = await apiJson(`/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`, "https://www.bilibili.com/", "视频详情接口", requestProfile, "omit");
+      const view = data?.View;
+      if (view?.bvid !== bvid || !view?.owner?.mid || typeof view?.title !== "string"
+        || typeof view?.desc !== "string" || !Array.isArray(data?.Tags)
+        || !Number.isFinite(view?.stat?.view)) {
+        throw new Error("视频详情缺少完整的标题、简介、标签、UP主或播放量");
+      }
       const value = {
-        description: String(data?.View?.desc || ""),
+        bvid,
+        title: view.title,
+        description: view.desc,
         tags: (data?.Tags || []).map(tag => String(tag?.tag_name || "").trim()).filter(Boolean),
-        categoryId: String(data?.View?.tid || ""),
-        categoryName: String(data?.View?.tname || ""),
+        categoryId: String(view.tid_v2 || view.tid || ""),
+        categoryName: String(view.tname_v2 || view.tname || ""),
+        uploaderId: String(view.owner.mid),
+        uploaderName: String(view.owner.name || ""),
+        coverUrl: String(view.pic || ""),
+        playCount: view.stat.view,
+        likeCount: view.stat.like,
+        danmakuCount: view.stat.danmaku,
+        publishTime: view.pubdate,
+        duration: view.duration,
+        url: `https://www.bilibili.com/video/${bvid}`,
+        detailsAvailable: true,
       };
       details[bvid] = value;
       cache[bvid] = {value, fetchedAt: now};
@@ -509,8 +528,133 @@ async function fetchVideoDetails(bvids, requestProfile = "search-safe") {
   return {details, errors, rateLimited, retryAfterMs, rateLimitEndpoint: rateLimited ? "视频详情接口" : ""};
 }
 
+const pageDecisions = new Map();
+let markQueue = Promise.resolve();
+
+async function pageSettings() {
+  const stored = await chrome.storage.local.get("biliFilterSettingsV2");
+  if (stored.biliFilterSettingsV2) return BiliFilterCore.normalizeSettings(stored.biliFilterSettingsV2);
+  const legacy = await chrome.storage.sync.get("biliFilterSettingsV1");
+  const settings = BiliFilterCore.normalizeSettings(legacy.biliFilterSettingsV1 || BiliFilterCore.DEFAULT_SETTINGS);
+  await chrome.storage.local.set({biliFilterSettingsV2: settings});
+  return settings;
+}
+
+async function filterPageVideos(bvids, mode) {
+  const ids = [...new Set((Array.isArray(bvids) ? bvids : [])
+    .filter(value => typeof value === "string" && /^BV[0-9A-Za-z]{10}$/.test(value)))].slice(0, 8);
+  const settings = await pageSettings();
+  const profile = mode === "search" ? "search-safe" : "feed-fast";
+  const detailResult = await fetchVideoDetails(ids, profile);
+  const results = [];
+  const survivors = [];
+  let rateLimited = detailResult.rateLimited;
+  const errorResult = (bvid, message) => ({bvid, status: "error", reasons: [message]});
+  const decision = (video, evaluation) => ({
+    bvid: video.bvid,
+    status: evaluation.status,
+    reasons: evaluation.reasons.map(reason => reason.message),
+    video: evaluation.status === "accepted" ? {
+      ...video,
+      appliedTopicPolicies: evaluation.effectiveThresholds.matchedPolicies,
+      effectiveThresholds: evaluation.effectiveThresholds,
+    } : undefined,
+  });
+  for (const bvid of ids) {
+    const video = detailResult.details[bvid];
+    if (!video) {
+      results.push(errorResult(bvid, detailResult.errors[bvid] || "无法确认视频信息"));
+      continue;
+    }
+    const preliminary = BiliFilterCore.evaluate(video, settings, {cheapOnly: true});
+    if (preliminary.status === "rejected") results.push(decision(video, preliminary));
+    else survivors.push(video);
+  }
+
+  const policies = settings.topicPolicies.filter(policy => policy.enabled && policy.name);
+  let classification = {results: [], mode: "none"};
+  if (survivors.length && policies.length) {
+    try {
+      classification = await classifyTopics({videos: survivors, policies, classifier: settings.topicClassifier});
+    } catch (error) {
+      survivors.forEach(video => results.push(errorResult(video.bvid, `话题判断失败：${error.message}`)));
+      survivors.length = 0;
+    }
+  }
+  const followerCandidates = [];
+  for (const video of survivors) {
+    const match = classification.results.find(result => result.id === video.bvid);
+    if (policies.length && !match) {
+      results.push(errorResult(video.bvid, "缺少必要话题判断"));
+      continue;
+    }
+    const enriched = {...video, coverText: [], topicMatches: match?.topics || [],
+      topicClassificationAvailable: true, topicClassifierMode: classification.mode,
+      topicClassifiedAt: match?.classifiedAt, topicCacheExpiresAt: match?.cacheExpiresAt};
+    const preliminary = BiliFilterCore.evaluate(enriched, settings, {cheapOnly: true});
+    if (preliminary.status === "rejected") results.push(decision(enriched, preliminary));
+    else followerCandidates.push(enriched);
+  }
+  if (followerCandidates.length) {
+    const followers = await fetchFollowerCounts(followerCandidates.map(video => video.uploaderId), profile);
+    rateLimited ||= followers.rateLimited;
+    for (const candidate of followerCandidates) {
+      const count = followers.counts[candidate.uploaderId];
+      if (!Number.isFinite(count)) {
+        results.push(errorResult(candidate.bvid, followers.errors[candidate.uploaderId] || "无法确认UP主粉丝数"));
+        continue;
+      }
+      const video = {...candidate, followerCount: count};
+      results.push(decision(video, BiliFilterCore.evaluate(video, settings)));
+    }
+  }
+  for (const result of results) pageDecisions.set(result.bvid, result);
+  while (pageDecisions.size > 500) pageDecisions.delete(pageDecisions.keys().next().value);
+  return {results, rateLimited};
+}
+
+function markPageVideo(bvid, context = {}) {
+  const run = markQueue.then(async () => {
+    let result = pageDecisions.get(bvid);
+    // service worker 休眠后内存可能已清空；重新确认后再保存样本。
+    if (result?.status !== "accepted") result = (await filterPageVideos([bvid], context?.sourceMode)).results[0];
+    if (result?.status !== "accepted") throw new Error("视频未通过完整过滤，无法标记");
+    const collection = BiliMarkedCore.normalizeCollection(await getStorageValue("biliFilterMarkedVideosV1"));
+    if (!collection[bvid]) {
+      if (Object.keys(collection).length >= BiliMarkedCore.MAX_MARKED_VIDEOS) throw new Error("标记库已满，请先导出或整理样本");
+      collection[bvid] = BiliMarkedCore.createSnapshot(result.video, {
+        sourceMode: context?.sourceMode === "search" ? "search" : "feed",
+        sourceQuery: String(context?.sourceQuery || "").slice(0, 100),
+      });
+      await setStorageValue("biliFilterMarkedVideosV1", collection);
+    }
+    return {marked: true};
+  });
+  markQueue = run.catch(() => undefined);
+  return run;
+}
+
+function updateMarkedVideo(bvid, changes = {}) {
+  const run = markQueue.then(async () => {
+    const collection = BiliMarkedCore.normalizeCollection(await getStorageValue("biliFilterMarkedVideosV1"));
+    if (changes.remove === true) delete collection[bvid];
+    else if (collection[bvid]) {
+      collection[bvid].note = String(changes.note || "").trim().slice(0, 1000);
+      collection[bvid].updatedAt = Date.now();
+    }
+    await setStorageValue("biliFilterMarkedVideosV1", collection);
+    return {collection};
+  });
+  markQueue = run.catch(() => undefined);
+  return run;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handlers = {
+    "bili-filter-check-page": () => filterPageVideos(message.bvids, message.mode),
+    "bili-filter-open-settings": async () => { await chrome.runtime.openOptionsPage(); return {}; },
+    "bili-filter-mark-page": () => markPageVideo(message.bvid, message.context),
+    "bili-filter-update-mark": () => updateMarkedVideo(message.bvid, message.changes),
     "bili-filter-fetch-feed": () => fetchFeed(message.options),
     "bili-filter-search": () => searchVideos(message.options),
     "bili-filter-fetch-followers": () => fetchFollowerCounts(message.mids, message.requestProfile),
@@ -530,6 +674,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         FOLLOWER_CACHE_KEY,
         DETAIL_CACHE_KEY,
         LEGACY_DETAIL_CACHE_KEY,
+        "biliFilterDetailCacheV2",
         TOPIC_CACHE_KEY,
         CANDIDATE_CACHE_KEY,
         LEGACY_CANDIDATE_CACHE_KEY,

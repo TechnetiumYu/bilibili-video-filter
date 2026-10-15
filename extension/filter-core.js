@@ -181,13 +181,17 @@
     return null;
   }
 
+  function metricNumber(value) {
+    return value === null || value === undefined || value === "" ? NaN : Number(value);
+  }
+
   function evaluate(video, rawSettings, options = {}) {
     const settings = normalizeSettings(rawSettings);
     const effective = resolveEffectiveThresholds(settings, video.topicMatches);
     const reasons = [];
     const keyword = keywordReason(video, settings);
     if (keyword) reasons.push(keyword);
-    const views = rangeReason(Number(video.playCount), effective.minViews, effective.maxViews, "play_count", "播放量");
+    const views = rangeReason(metricNumber(video.playCount), effective.minViews, effective.maxViews, "play_count", "播放量");
     if (views) reasons.push(views);
 
     if (!options.cheapOnly) {
@@ -195,7 +199,7 @@
       if (activeTopics.length && video.topicClassificationAvailable === false) {
         reasons.push({type: "unknown_data", field: "topic_classification", message: "无法确认特殊话题分类"});
       }
-      const followers = rangeReason(Number(video.followerCount), effective.minFollowers, effective.maxFollowers, "follower_count", "UP主粉丝数");
+      const followers = rangeReason(metricNumber(video.followerCount), effective.minFollowers, effective.maxFollowers, "follower_count", "UP主粉丝数");
       if (followers) reasons.push(followers);
       if (video.detailsAvailable === false && (settings.keywordScopes.description || settings.keywordScopes.tags || activeTopics.length)) {
         reasons.push({type: "unknown_data", field: "video_details", message: "无法确认视频简介或标签"});

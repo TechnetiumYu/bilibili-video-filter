@@ -1,0 +1,49 @@
+/* document_start 时开始遮住目标卡片，避免未检查的视频先闪现。 */
+html[data-bvf-active] :is(.bili-video-card, .video-item, .video-list-item):not([data-bvf-state="accepted"]):not([data-bvf-approved]) {
+  visibility: hidden !important;
+}
+html[data-bvf-active] [data-bvf-state="pending"],
+html[data-bvf-active] [data-bvf-state="error"] {
+  position: relative !important;
+  min-height: 160px;
+  visibility: hidden !important;
+}
+html[data-bvf-active] [data-bvf-state="pending"] *,
+html[data-bvf-active] [data-bvf-state="error"] * {
+  visibility: hidden !important;
+}
+html[data-bvf-active] [data-bvf-state="pending"]::after,
+html[data-bvf-active] [data-bvf-state="error"]::after {
+  content: attr(data-bvf-label);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  min-height: 100px;
+  padding: 12px;
+  border-radius: 6px;
+  color: #9499a0;
+  background: #f1f2f3;
+  font: 13px/1.6 "Microsoft YaHei", sans-serif;
+  visibility: visible !important;
+}
+html[data-bvf-active] [data-bvf-state="rejected"] {
+  display: none !important;
+}
+html[data-bvf-active] .bvf-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: #9499a0;
+  font: 12px/1.6 "Microsoft YaHei", sans-serif;
+}
+html[data-bvf-active] .bvf-card-actions button {
+  cursor: pointer;
+  border: 1px solid #e3e5e7;
+  border-radius: 4px;
+  padding: 2px 7px;
+  background: white;
+  color: #61666d;
+  font: inherit;
+}

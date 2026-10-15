@@ -7,17 +7,7 @@
   const LEGACY_SETTINGS_KEY = "biliFilterSettingsV1";
   const MARKED_VIDEOS_KEY = "biliFilterMarkedVideosV1";
   const LEGACY_FILTER_CHECKPOINT_KEY = "biliFilterCheckpointV1";
-  const PAGE_SIZE = 20;
-  const TARGET_INCREMENT = 20;
-  const FEED_MAX_INSPECTED_PER_RUN = 120;
-  const SEARCH_MAX_INSPECTED_PER_RUN = 60;
-  const ENRICH_BATCH_SIZE = 8;
-
   const elements = {
-    searchForm: document.querySelector("#searchForm"),
-    searchInput: document.querySelector("#searchInput"),
-    searchSubmit: document.querySelector("#searchForm button[type='submit']"),
-    searchClearButton: document.querySelector("#searchClearButton"),
     markedLibraryButton: document.querySelector("#markedLibraryButton"),
     markedCount: document.querySelector("#markedCount"),
     markedDialog: document.querySelector("#markedDialog"),
@@ -47,45 +37,10 @@
     settingsError: document.querySelector("#settingsError"),
     resetButton: document.querySelector("#resetButton"),
     clearCacheButton: document.querySelector("#clearCacheButton"),
-    refreshButton: document.querySelector("#refreshButton"),
-    loadMoreButton: document.querySelector("#loadMoreButton"),
-    sourceBadge: document.querySelector("#sourceBadge"),
-    feedEyebrow: document.querySelector("#feedEyebrow"),
-    feedTitle: document.querySelector("#feedTitle"),
-    statusText: document.querySelector("#statusText"),
-    acceptedCount: document.querySelector("#acceptedCount"),
-    rejectedCount: document.querySelector("#rejectedCount"),
-    inspectedCount: document.querySelector("#inspectedCount"),
-    reasonSummary: document.querySelector("#reasonSummary"),
-    videoGrid: document.querySelector("#videoGrid"),
-    skeletonGrid: document.querySelector("#skeletonGrid"),
-    emptyState: document.querySelector("#emptyState"),
-    emptyTitle: document.querySelector("#emptyTitle"),
-    emptyMessage: document.querySelector("#emptyMessage"),
   };
 
   let settings = Core.normalizeSettings(Core.DEFAULT_SETTINGS);
   let markedVideos = {};
-  const state = {
-    mode: "feed",
-    query: "",
-    total: null,
-    batch: 1,
-    accepted: [],
-    seen: new Set(),
-    inspected: 0,
-    rejected: 0,
-    causes: new Map(),
-    loading: false,
-    noMore: false,
-    runId: 0,
-    pendingCandidates: [],
-    requestStopped: false,
-    initialized: false,
-    autoLoadVisible: false,
-    autoLoadTimer: null,
-  };
-
   function runtimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, response => {
@@ -132,12 +87,6 @@
         else resolve();
       });
     });
-  }
-
-  async function persistMarkedVideos() {
-    markedVideos = MarkedCore.normalizeCollection(markedVideos);
-    await storageSet("local", {[MARKED_VIDEOS_KEY]: markedVideos});
-    updateMarkedCount();
   }
 
   function updateMarkedCount() {
@@ -199,9 +148,11 @@
     remove.textContent = "删除标记";
     remove.addEventListener("click", async () => {
       if (!confirm(`确定删除“${snapshot.title || snapshot.bvid}”的分析标记吗？`)) return;
-      delete markedVideos[snapshot.bvid];
-      await persistMarkedVideos();
-      renderMarkedLibrary();
+      try {
+        const response = await runtimeMessage({type: "bili-filter-update-mark", bvid: snapshot.bvid, changes: {remove: true}});
+        markedVideos = MarkedCore.normalizeCollection(response.collection);
+        renderMarkedLibrary();
+      } catch (error) { elements.markedActionStatus.textContent = `删除失败：${error.message}`; }
     });
     heading.append(title, remove);
 
@@ -232,10 +183,11 @@
     note.addEventListener("change", async () => {
       const current = markedVideos[snapshot.bvid];
       if (!current) return;
-      current.note = note.value.trim().slice(0, 1000);
-      current.updatedAt = Date.now();
-      await persistMarkedVideos();
-      elements.markedActionStatus.textContent = `已保存“${snapshot.title || snapshot.bvid}”的备注`;
+      try {
+        const response = await runtimeMessage({type: "bili-filter-update-mark", bvid: snapshot.bvid, changes: {note: note.value}});
+        markedVideos = MarkedCore.normalizeCollection(response.collection);
+        elements.markedActionStatus.textContent = `已保存“${snapshot.title || snapshot.bvid}”的备注`;
+      } catch (error) { elements.markedActionStatus.textContent = `备注保存失败：${error.message}`; }
     });
 
     main.append(heading, meta);
@@ -257,25 +209,6 @@
     const tagText = summary.tags.slice(0, 5).map(item => `${item.name} ${item.count}`).join("、") || "暂无";
     elements.markedSummary.textContent = `共 ${videos.length} 个样本 · 主要分区：${categoryText} · 常见标签：${tagText}`;
     updateMarkedCount();
-  }
-
-  async function markVideo(video, button) {
-    if (markedVideos[video.bvid]) return;
-    if (Object.keys(markedVideos).length >= MarkedCore.MAX_MARKED_VIDEOS) {
-      throw new Error(`标记库已达到 ${MarkedCore.MAX_MARKED_VIDEOS} 个上限，请先导出并删除部分样本`);
-    }
-    const snapshot = MarkedCore.createSnapshot(video, {
-      sourceMode: state.mode,
-      sourceQuery: state.query,
-      effectiveThresholds: video.effectiveThresholds,
-      appliedTopicPolicies: video.appliedTopicPolicies,
-    });
-    if (!snapshot.bvid) throw new Error("视频缺少 BV 号，无法标记");
-    markedVideos[snapshot.bvid] = snapshot;
-    await persistMarkedVideos();
-    button.disabled = true;
-    button.textContent = "✓ 已标记";
-    elements.markedActionStatus.textContent = `已标记“${snapshot.title || snapshot.bvid}”`;
   }
 
   async function copyDiscussionData() {
@@ -308,27 +241,6 @@
     if (number >= 100000000) return `${(number / 100000000).toFixed(number >= 1000000000 ? 0 : 1)}亿`;
     if (number >= 10000) return `${(number / 10000).toFixed(number >= 100000 ? 0 : 1)}万`;
     return new Intl.NumberFormat("zh-CN").format(number);
-  }
-
-  function formatDuration(seconds) {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const rest = total % 60;
-    return hours
-      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
-      : `${minutes}:${String(rest).padStart(2, "0")}`;
-  }
-
-  function formatPublishTime(value) {
-    const seconds = Number(value);
-    if (!Number.isFinite(seconds) || seconds <= 0) return "发布时间未知";
-    const date = new Date(seconds * 1000);
-    if (Number.isNaN(date.getTime())) return "发布时间未知";
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `发布时间：${year}-${month}-${day}`;
   }
 
   function setOptionalInput(input, value) {
@@ -474,519 +386,6 @@
     };
   }
 
-  function addCause(reason) {
-    const labelByType = {
-      keyword: "关键词",
-      play_count: "播放量",
-      follower_count: "粉丝数",
-      unknown_data: "数据无法确认",
-    };
-    const label = labelByType[reason.type] || "其他";
-    state.causes.set(label, (state.causes.get(label) || 0) + 1);
-  }
-
-  function updateStats() {
-    elements.acceptedCount.textContent = String(state.accepted.length);
-    elements.rejectedCount.textContent = String(state.rejected);
-    elements.inspectedCount.textContent = String(state.inspected);
-    elements.reasonSummary.replaceChildren();
-    for (const [label, count] of state.causes) {
-      const chip = document.createElement("span");
-      chip.textContent = `${label}过滤 ${count}`;
-      elements.reasonSummary.append(chip);
-    }
-    elements.reasonSummary.hidden = state.causes.size === 0;
-  }
-
-  function updateModeUi() {
-    const searching = state.mode === "search";
-    elements.feedEyebrow.textContent = searching ? "FILTERED SEARCH" : "CLEAN FEED";
-    elements.feedTitle.textContent = searching ? `搜索：${state.query}` : "为你筛选";
-    elements.searchClearButton.hidden = !searching;
-    elements.refreshButton.textContent = searching ? "重新搜索" : "换一批";
-    elements.loadMoreButton.textContent = searching ? "自动加载更多搜索结果" : "自动加载更多视频";
-    elements.emptyTitle.textContent = searching ? "没有符合门槛的搜索结果" : "暂时没有足够的通过结果";
-    elements.emptyMessage.textContent = searching
-      ? "搜索候选已完成检查。可以尝试其他搜索词，或适当放宽过滤门槛。"
-      : "过滤器已经检查了本轮候选。可以放宽门槛，或稍后换一批。";
-    elements.sourceBadge.textContent = searching ? `正在搜索“${state.query}”` : "正在连接 B站";
-  }
-
-  function completedFilterMessage(searching) {
-    const hasTopics = settings.topicPolicies.some(policy => policy.enabled && policy.name);
-    const scope = hasTopics ? "全局条件及命中的特殊话题门槛" : "关键词、粉丝数和播放量三项条件";
-    return searching
-      ? `“${state.query}”的搜索结果已过滤；只展示通过${scope}的视频，向下滚动会继续加载。`
-      : `已完成当前批次；只展示通过${scope}的视频，向下滚动会继续加载。`;
-  }
-
-  function createVideoCard(video) {
-    const article = document.createElement("article");
-    article.className = "video-card";
-
-    const coverLink = document.createElement("a");
-    coverLink.className = "cover-link";
-    coverLink.href = video.url;
-    coverLink.target = "_blank";
-    coverLink.rel = "noreferrer";
-    const image = document.createElement("img");
-    image.src = safeImageUrl(video.coverUrl);
-    image.alt = "";
-    image.loading = "lazy";
-    image.referrerPolicy = "no-referrer";
-    const duration = document.createElement("span");
-    duration.className = "duration";
-    duration.textContent = formatDuration(video.duration);
-    coverLink.append(image, duration);
-
-    const title = document.createElement("a");
-    title.className = "video-title";
-    title.href = video.url;
-    title.target = "_blank";
-    title.rel = "noreferrer";
-    title.textContent = video.title;
-
-    const meta = document.createElement("div");
-    meta.className = "video-meta";
-    const avatar = document.createElement("img");
-    avatar.className = "avatar";
-    avatar.src = safeImageUrl(video.uploaderAvatar);
-    avatar.alt = "";
-    avatar.loading = "lazy";
-    avatar.referrerPolicy = "no-referrer";
-    const uploader = document.createElement("span");
-    uploader.className = "uploader";
-    uploader.textContent = video.uploaderName;
-    meta.append(avatar, uploader);
-
-    const stats = document.createElement("div");
-    stats.className = "video-stats";
-    stats.textContent = `${formatCount(video.playCount)} 播放 · ${formatCount(video.followerCount)} 粉丝`;
-    const publishTime = document.createElement("div");
-    publishTime.className = "video-publish-time";
-    const topics = document.createElement("div");
-    topics.className = "topic-badges";
-    for (const policy of video.appliedTopicPolicies || []) {
-      const badge = document.createElement("span");
-      badge.textContent = `特殊话题：${policy.name}`;
-      topics.append(badge);
-    }
-    publishTime.textContent = formatPublishTime(video.publishTime);
-    const cardActions = document.createElement("div");
-    cardActions.className = "card-actions";
-    const markButton = document.createElement("button");
-    markButton.type = "button";
-    markButton.className = "mark-video-button";
-    markButton.dataset.bvid = video.bvid;
-    markButton.disabled = Boolean(markedVideos[video.bvid]);
-    markButton.textContent = markButton.disabled ? "✓ 已标记" : "标记待分析";
-    markButton.addEventListener("click", () => {
-      markVideo(video, markButton).catch(error => {
-        markButton.disabled = false;
-        markButton.textContent = "标记失败";
-        elements.statusText.textContent = `标记失败：${error.message}`;
-      });
-    });
-    cardActions.append(publishTime, markButton);
-    article.append(coverLink, title, meta, stats);
-    if (topics.childElementCount) article.append(topics);
-    article.append(cardActions);
-    return article;
-  }
-
-  function showSkeletons(count = 8) {
-    elements.skeletonGrid.replaceChildren();
-    for (let index = 0; index < count; index += 1) {
-      const card = document.createElement("div");
-      card.className = "skeleton-card";
-      const cover = document.createElement("div");
-      cover.className = "skeleton-cover";
-      const line = document.createElement("div");
-      line.className = "skeleton-line";
-      const short = document.createElement("div");
-      short.className = "skeleton-line skeleton-short";
-      card.append(cover, line, short);
-      elements.skeletonGrid.append(card);
-    }
-    elements.skeletonGrid.hidden = false;
-  }
-
-  function hideSkeletons() {
-    elements.skeletonGrid.hidden = true;
-    elements.skeletonGrid.replaceChildren();
-  }
-
-  function resetFeed(options = {}) {
-    if (options.clearCheckpoint !== false) storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
-    if (state.autoLoadTimer) clearTimeout(state.autoLoadTimer);
-    state.runId += 1;
-    state.batch = 1;
-    state.accepted = [];
-    state.seen.clear();
-    state.inspected = 0;
-    state.rejected = 0;
-    state.causes.clear();
-    state.noMore = false;
-    state.total = null;
-    state.loading = false;
-    state.pendingCandidates = [];
-    state.requestStopped = false;
-    state.autoLoadTimer = null;
-    elements.videoGrid.replaceChildren();
-    elements.emptyState.hidden = true;
-    updateModeUi();
-    updateStats();
-  }
-
-  function stopForRateLimit(rateLimit) {
-    const endpoint = rateLimit?.endpoint || "B站接口";
-    state.pendingCandidates = [];
-    state.noMore = true;
-    state.requestStopped = true;
-    elements.statusText.textContent = `${endpoint}返回 HTTP 412；本地冷却已关闭，本轮已停止。可点击“${state.mode === "search" ? "重新搜索" : "换一批"}”立即重试。`;
-    storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
-  }
-
-  function recordFinalDecision(video, result) {
-    if (result.status === "accepted") {
-      video.appliedTopicPolicies = result.effectiveThresholds.matchedPolicies;
-      video.effectiveThresholds = {
-        minViews: result.effectiveThresholds.minViews,
-        maxViews: result.effectiveThresholds.maxViews,
-        minFollowers: result.effectiveThresholds.minFollowers,
-        maxFollowers: result.effectiveThresholds.maxFollowers,
-      };
-      state.accepted.push(video);
-      elements.videoGrid.append(createVideoCard(video));
-    } else {
-      state.rejected += 1;
-      result.reasons.forEach(addCause);
-    }
-  }
-
-  function rateLimitResult(response, fallbackEndpoint) {
-    return {
-      endpoint: response?.rateLimitEndpoint || fallbackEndpoint,
-      retryAfterMs: Math.max(1000, Number(response?.retryAfterMs) || 30000),
-    };
-  }
-
-  async function enrichAndFilterFast(candidates, runId) {
-    const cheapSurvivors = [];
-    for (const video of candidates) {
-      if (video.__cheapChecked) {
-        cheapSurvivors.push(video);
-        continue;
-      }
-      state.inspected += 1;
-      const result = Core.evaluate(video, settings, {cheapOnly: true});
-      if (result.status === "rejected") {
-        state.rejected += 1;
-        result.reasons.forEach(addCause);
-      } else {
-        cheapSurvivors.push({...video, __cheapChecked: true});
-      }
-    }
-    updateStats();
-    if (!cheapSurvivors.length || runId !== state.runId) return {pending: []};
-
-    const activeTopicPolicies = settings.topicPolicies.filter(policy => policy.enabled && policy.name);
-    const needDetails = settings.keywordScopes.description || settings.keywordScopes.tags || activeTopicPolicies.length > 0;
-    const detailPromise = needDetails
-      ? runtimeMessage({
-          type: "bili-filter-fetch-details",
-          bvids: cheapSurvivors.map(video => video.bvid),
-          requestProfile: "feed-fast",
-        })
-      : Promise.resolve({details: {}, errors: {}, rateLimited: false});
-    const followerPromise = runtimeMessage({
-      type: "bili-filter-fetch-followers",
-      mids: cheapSurvivors.map(video => video.uploaderId),
-      requestProfile: "feed-fast",
-    });
-    const [detailResult, followerResult] = await Promise.all([detailPromise, followerPromise]);
-    if (runId !== state.runId) return {pending: []};
-    if (detailResult.rateLimited || followerResult.rateLimited) {
-      const limited = detailResult.rateLimited ? detailResult : followerResult;
-      return {
-        pending: cheapSurvivors,
-        rateLimit: rateLimitResult(limited, detailResult.rateLimited ? "视频详情接口" : "粉丝数接口"),
-      };
-    }
-
-    const enrichedCandidates = cheapSurvivors.map(candidate => {
-      const detail = detailResult.details?.[candidate.bvid];
-      return {
-        ...candidate,
-        description: detail?.description ?? candidate.description ?? "",
-        tags: detail?.tags ?? candidate.tags ?? [],
-        categoryId: detail?.categoryId ?? candidate.categoryId ?? "",
-        categoryName: detail?.categoryName ?? candidate.categoryName ?? "",
-        coverText: Array.isArray(candidate.coverText) ? candidate.coverText : [],
-        followerCount: followerResult.counts?.[candidate.uploaderId],
-        detailsAvailable: needDetails ? Boolean(detail || candidate.detailsAvailable) : true,
-      };
-    });
-
-    let topicResult = {results: enrichedCandidates.map(video => ({id: video.bvid, topics: []})), mode: "none"};
-    let topicClassificationAvailable = true;
-    if (activeTopicPolicies.length) {
-      try {
-        topicResult = await runtimeMessage({
-          type: "bili-filter-classify-topics",
-          options: {videos: enrichedCandidates, policies: activeTopicPolicies, classifier: settings.topicClassifier},
-        });
-      } catch (error) {
-        topicClassificationAvailable = false;
-        console.warn("特殊话题分类失败，候选将严格不放行：", error);
-      }
-    }
-    if (runId !== state.runId) return {pending: []};
-    const topicByVideo = new Map((topicResult.results || []).map(result => [result.id, result]));
-    for (const candidate of enrichedCandidates) {
-      const classification = topicByVideo.get(candidate.bvid) || {topics: []};
-      const video = {
-        ...candidate,
-        topicMatches: classification.topics || [],
-        topicClassificationAvailable,
-        topicClassifierMode: topicResult.mode || "none",
-        topicClassifiedAt: classification.classifiedAt,
-        topicCacheExpiresAt: classification.cacheExpiresAt,
-      };
-      recordFinalDecision(video, Core.evaluate(video, settings));
-    }
-    updateStats();
-    return {pending: []};
-  }
-
-  async function enrichAndFilterSafe(candidates, runId) {
-    const cheapSurvivors = [];
-    for (const video of candidates) {
-      if (video.__cheapChecked) {
-        cheapSurvivors.push(video);
-        continue;
-      }
-      state.inspected += 1;
-      const result = Core.evaluate(video, settings, {cheapOnly: true});
-      if (result.status === "rejected") {
-        state.rejected += 1;
-        result.reasons.forEach(addCause);
-      } else {
-        cheapSurvivors.push({...video, __cheapChecked: true});
-      }
-    }
-    updateStats();
-    if (!cheapSurvivors.length || runId !== state.runId) return {pending: []};
-
-    const activeTopicPolicies = settings.topicPolicies.filter(policy => policy.enabled && policy.name);
-    const needDetails = settings.keywordScopes.description || settings.keywordScopes.tags || activeTopicPolicies.length > 0;
-    for (let offset = 0; offset < cheapSurvivors.length; offset += ENRICH_BATCH_SIZE) {
-      const group = cheapSurvivors.slice(offset, offset + ENRICH_BATCH_SIZE);
-      const remaining = cheapSurvivors.slice(offset + ENRICH_BATCH_SIZE);
-      const missingDetailCandidates = needDetails ? group.filter(video => video.detailsAvailable !== true) : [];
-      const detailResult = missingDetailCandidates.length
-        ? await runtimeMessage({type: "bili-filter-fetch-details", bvids: missingDetailCandidates.map(video => video.bvid), requestProfile: "search-safe"})
-        : {details: {}, errors: {}, rateLimited: false};
-      if (runId !== state.runId) return {pending: []};
-      if (detailResult.rateLimited) {
-        return {pending: [...group, ...remaining], rateLimit: rateLimitResult(detailResult, "视频详情接口")};
-      }
-
-      const enrichedCandidates = [];
-      for (const candidate of group) {
-        const detail = detailResult.details?.[candidate.bvid];
-        const video = {
-          ...candidate,
-          description: detail?.description ?? candidate.description ?? "",
-          tags: detail?.tags ?? candidate.tags ?? [],
-          categoryId: detail?.categoryId ?? candidate.categoryId ?? "",
-          categoryName: detail?.categoryName ?? candidate.categoryName ?? "",
-          coverText: Array.isArray(candidate.coverText) ? candidate.coverText : [],
-          detailsAvailable: needDetails ? Boolean(detail || candidate.detailsAvailable) : true,
-        };
-        if (needDetails && !video.detailsAvailable) {
-          recordFinalDecision(video, Core.evaluate({...video, topicClassificationAvailable: false}, settings));
-        } else {
-          enrichedCandidates.push(video);
-        }
-      }
-      if (!enrichedCandidates.length) {
-        updateStats();
-        continue;
-      }
-
-      let topicResult = {results: enrichedCandidates.map(video => ({id: video.bvid, topics: []})), mode: "none"};
-      if (activeTopicPolicies.length) {
-        try {
-          topicResult = await runtimeMessage({
-            type: "bili-filter-classify-topics",
-            options: {videos: enrichedCandidates, policies: activeTopicPolicies, classifier: settings.topicClassifier},
-          });
-        } catch (error) {
-          console.warn("特殊话题分类失败，候选将严格不放行：", error);
-          for (const video of enrichedCandidates) {
-            recordFinalDecision({...video, topicClassificationAvailable: false}, Core.evaluate({
-              ...video,
-              topicClassificationAvailable: false,
-            }, settings));
-          }
-          updateStats();
-          continue;
-        }
-      }
-      if (runId !== state.runId) return {pending: []};
-
-      const topicByVideo = new Map((topicResult.results || []).map(result => [result.id, result]));
-      const followerCandidates = [];
-      for (const candidate of enrichedCandidates) {
-        const classification = topicByVideo.get(candidate.bvid) || {topics: []};
-        const video = {
-          ...candidate,
-          topicMatches: classification.topics || [],
-          topicClassificationAvailable: true,
-          topicClassifierMode: topicResult.mode || "none",
-          topicClassifiedAt: classification.classifiedAt,
-          topicCacheExpiresAt: classification.cacheExpiresAt,
-        };
-        const preFollower = Core.evaluate(video, settings, {cheapOnly: true});
-        if (preFollower.status === "rejected") recordFinalDecision(video, preFollower);
-        else followerCandidates.push(video);
-      }
-      if (!followerCandidates.length) {
-        updateStats();
-        continue;
-      }
-
-      const followerResult = await runtimeMessage({
-        type: "bili-filter-fetch-followers",
-        mids: followerCandidates.map(video => video.uploaderId),
-        requestProfile: "search-safe",
-      });
-      if (runId !== state.runId) return {pending: []};
-      const pendingFollowers = [];
-      for (const candidate of followerCandidates) {
-        const followerCount = followerResult.counts?.[candidate.uploaderId];
-        if (followerResult.rateLimited && !Number.isFinite(Number(followerCount))) {
-          pendingFollowers.push(candidate);
-          continue;
-        }
-        const video = {...candidate, followerCount};
-        recordFinalDecision(video, Core.evaluate(video, settings));
-      }
-      updateStats();
-      if (followerResult.rateLimited) {
-        return {
-          pending: [...pendingFollowers, ...remaining],
-          rateLimit: rateLimitResult(followerResult, "粉丝数接口"),
-        };
-      }
-    }
-    updateStats();
-    return {pending: []};
-  }
-
-  function enrichAndFilter(candidates, runId) {
-    return state.mode === "feed" ? enrichAndFilterFast(candidates, runId) : enrichAndFilterSafe(candidates, runId);
-  }
-
-  async function fillFeed(targetCount) {
-    if (state.loading || (state.noMore && !state.pendingCandidates.length)) return;
-    state.loading = true;
-    const runId = state.runId;
-    const acceptedAtStart = state.accepted.length;
-    let inspectedThisRun = 0;
-    const maxInspectedThisRun = state.mode === "feed" ? FEED_MAX_INSPECTED_PER_RUN : SEARCH_MAX_INSPECTED_PER_RUN;
-    elements.loadMoreButton.disabled = true;
-    elements.refreshButton.disabled = true;
-    elements.searchSubmit.disabled = true;
-    elements.statusText.textContent = state.mode === "search"
-      ? `正在搜索“${state.query}”并检查候选，未通过的视频不会显示…`
-      : "正在检查候选视频，未确认的视频不会显示…";
-    showSkeletons();
-
-    try {
-      while (state.accepted.length < targetCount && inspectedThisRun < maxInspectedThisRun && (state.pendingCandidates.length || !state.noMore)) {
-        if (state.pendingCandidates.length) {
-          const pending = state.pendingCandidates;
-          state.pendingCandidates = [];
-          const pendingResult = await enrichAndFilter(pending, runId);
-          if (pendingResult?.rateLimit) {
-            stopForRateLimit(pendingResult.rateLimit);
-            break;
-          }
-          continue;
-        }
-        const response = state.mode === "search"
-          ? await runtimeMessage({
-              type: "bili-filter-search",
-              options: {query: state.query, page: state.batch, pageSize: PAGE_SIZE},
-            })
-          : await runtimeMessage({
-              type: "bili-filter-fetch-feed",
-              options: {batch: state.batch, pageSize: PAGE_SIZE, requestProfile: "feed-fast"},
-            });
-        if (runId !== state.runId) return;
-        state.batch += 1;
-        state.noMore = Boolean(response.noMore);
-        state.total = Number.isFinite(Number(response.total)) ? Number(response.total) : state.total;
-        const cacheLabel = response.cacheMode === "fresh" ? " · 本地缓存" : response.cacheMode === "stale" ? " · 风控缓存" : "";
-        elements.sourceBadge.textContent = response.source === "search"
-          ? `搜索候选${state.total === null ? "" : ` ${formatCount(state.total)} 条`} · ${response.searchProvider === "wbi" ? "WBI" : "备用通道"}${cacheLabel}`
-          : `${response.source === "recommend" ? "个性化推荐候选" : "热门视频候选（兜底）"}${cacheLabel}`;
-        const fresh = (response.items || []).filter(video => {
-          if (state.seen.has(video.bvid)) return false;
-          state.seen.add(video.bvid);
-          return true;
-        });
-        if (!fresh.length) {
-          state.noMore = true;
-          break;
-        }
-        inspectedThisRun += fresh.length;
-        const filterResult = await enrichAndFilter(fresh, runId);
-        if (filterResult?.rateLimit) {
-          stopForRateLimit(filterResult.rateLimit);
-          break;
-        }
-        if (runId === state.runId && state.accepted.length < targetCount) {
-          elements.statusText.textContent = `${state.mode === "search" ? `搜索“${state.query}”并` : ""}已检查 ${state.inspected} 个候选，通过 ${state.accepted.length} 个，正在继续补量…`;
-        }
-      }
-
-      if (runId !== state.runId) return;
-      if (state.requestStopped) {
-        elements.emptyState.hidden = state.accepted.length > 0;
-        return;
-      }
-      elements.emptyState.hidden = state.accepted.length > 0;
-      if (state.accepted.length >= targetCount) {
-        elements.statusText.textContent = completedFilterMessage(state.mode === "search");
-      } else {
-        elements.statusText.textContent = state.mode === "search"
-          ? `搜索“${state.query}”并检查了 ${inspectedThisRun} 个候选，当前门槛下通过结果较少。`
-          : `本轮检查了 ${inspectedThisRun} 个候选，当前门槛下通过结果较少。`;
-      }
-      storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
-    } catch (error) {
-      if (runId !== state.runId) return;
-      if (error.biliRateLimited) {
-        stopForRateLimit({endpoint: error.endpoint});
-      } else {
-        elements.statusText.textContent = `加载失败：${error.message}`;
-      }
-      elements.emptyState.hidden = state.accepted.length > 0;
-    } finally {
-      if (runId === state.runId) {
-        state.loading = false;
-        hideSkeletons();
-        elements.loadMoreButton.disabled = false;
-        elements.refreshButton.disabled = false;
-        elements.searchSubmit.disabled = false;
-        if (state.accepted.length > acceptedAtStart) scheduleAutoLoad();
-      }
-    }
-  }
-
   async function saveSettings(event) {
     event.preventDefault();
     const result = Core.validateSettings(readSettingsForm());
@@ -997,18 +396,7 @@
     elements.settingsError.textContent = "";
     settings = result.settings;
     await storageSet("local", {[SETTINGS_KEY]: settings});
-    resetFeed();
-    fillFeed(TARGET_INCREMENT);
-  }
-
-  function scheduleAutoLoad() {
-    if (state.autoLoadTimer || !state.initialized || !state.autoLoadVisible || state.loading) return;
-    if (state.noMore && !state.pendingCandidates.length) return;
-    state.autoLoadTimer = setTimeout(() => {
-      state.autoLoadTimer = null;
-      if (!state.autoLoadVisible || state.loading) return;
-      fillFeed(state.accepted.length + TARGET_INCREMENT);
-    }, 180);
+    document.querySelector("#saveStatus").textContent = "已保存，B站首页与搜索结果正在按新规则重新检查。";
   }
 
   elements.form.addEventListener("submit", event => {
@@ -1038,43 +426,12 @@
       }, 1600);
     }
   });
-  elements.searchForm.addEventListener("submit", event => {
-    event.preventDefault();
-    const query = elements.searchInput.value.trim();
-    if (!query) {
-      state.mode = "feed";
-      state.query = "";
-      resetFeed();
-      fillFeed(TARGET_INCREMENT);
-      return;
-    }
-    state.mode = "search";
-    state.query = query.slice(0, 100);
-    elements.searchInput.value = state.query;
-    resetFeed();
-    fillFeed(TARGET_INCREMENT);
-  });
-  elements.searchClearButton.addEventListener("click", () => {
-    elements.searchInput.value = "";
-    state.mode = "feed";
-    state.query = "";
-    resetFeed();
-    fillFeed(TARGET_INCREMENT);
-    elements.searchInput.focus();
-  });
-  elements.refreshButton.addEventListener("click", () => {
-    resetFeed();
-    fillFeed(TARGET_INCREMENT);
-  });
-  elements.loadMoreButton.addEventListener("click", () => fillFeed(state.accepted.length + TARGET_INCREMENT));
-  const infiniteScrollObserver = new IntersectionObserver(entries => {
-    state.autoLoadVisible = entries.some(entry => entry.isIntersecting);
-    if (state.autoLoadVisible) scheduleAutoLoad();
-  }, {rootMargin: "500px 0px"});
-  infiniteScrollObserver.observe(elements.loadMoreButton);
   elements.markedLibraryButton.addEventListener("click", () => {
     elements.markedActionStatus.textContent = "";
-    renderMarkedLibrary();
+    storageGet("local", MARKED_VIDEOS_KEY).then(value => {
+      markedVideos = MarkedCore.normalizeCollection(value || {});
+      renderMarkedLibrary();
+    }).catch(error => { elements.markedActionStatus.textContent = error.message; });
     elements.markedDialog.showModal();
   });
   elements.closeMarkedDialog.addEventListener("click", () => elements.markedDialog.close());
@@ -1100,15 +457,9 @@
     writeSettingsForm(settings);
     renderMarkedLibrary();
     await storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
-    resetFeed({clearCheckpoint: false});
-    await fillFeed(TARGET_INCREMENT);
-    state.initialized = true;
-    scheduleAutoLoad();
   }
 
   initialize().catch(error => {
-    hideSkeletons();
-    elements.statusText.textContent = `初始化失败：${error.message}`;
-    elements.emptyState.hidden = false;
+    elements.settingsError.textContent = `初始化失败：${error.message}`;
   });
 })();

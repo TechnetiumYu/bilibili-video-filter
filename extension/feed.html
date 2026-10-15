@@ -4,26 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>B站视频过滤器</title>
+  <title>B站视频过滤器 · 设置与标记库</title>
   <link rel="stylesheet" href="feed.css">
 </head>
-<body>
+<body class="settings-only">
   <header class="topbar">
     <a class="brand" href="feed.html" aria-label="B站视频过滤器首页">
       <span class="brand-mark">滤</span>
-      <span><strong>B站视频过滤器</strong><small>独立筛选首页</small></span>
+      <span><strong>B站视频过滤器</strong><small>原页面过滤 · 设置与标记库</small></span>
     </a>
-    <form id="searchForm" class="search-form" role="search">
-      <label class="search-box">
-        <span class="search-icon" aria-hidden="true">⌕</span>
-        <input id="searchInput" type="search" maxlength="100" autocomplete="off" placeholder="搜索 B站视频，结果仍会经过过滤">
-        <button id="searchClearButton" class="search-clear" type="button" aria-label="清除搜索" title="返回推荐流" hidden>×</button>
-      </label>
-      <button class="button search-button" type="submit">搜索</button>
-    </form>
     <div class="topbar-actions">
-      <span id="sourceBadge" class="source-badge">正在连接 B站</span>
-      <button id="refreshButton" class="button secondary" type="button">换一批</button>
       <button id="markedLibraryButton" class="button secondary marked-library-button" type="button">标记库 <strong id="markedCount">0</strong></button>
       <a class="button primary" href="https://www.bilibili.com/" target="_blank" rel="noreferrer">打开 B站</a>
     </div>
@@ -38,6 +28,7 @@
         </div>
         <span class="strict-pill">全部通过才显示</span>
       </div>
+      <p class="settings-intro">正常打开 B站首页或搜索视频，过滤会自动在原页面生效。右下角可查看检查统计、重试失败项；保存设置后，已打开的 B站页面会自动重新检查。</p>
 
       <form id="settingsForm" novalidate>
         <label class="field">
@@ -105,10 +96,11 @@
 
         <p id="settingsError" class="form-error" role="alert"></p>
         <div class="form-actions">
-          <button class="button primary grow" type="submit">保存并重新过滤</button>
+          <button class="button primary grow" type="submit">保存并应用到B站</button>
           <button id="resetButton" class="button ghost" type="button">恢复默认</button>
         </div>
       </form>
+      <p id="saveStatus" class="settings-save-status" role="status"></p>
 
       <div class="privacy-note">
         <strong>本地过滤</strong>
@@ -117,32 +109,6 @@
       </div>
     </aside>
 
-    <section class="feed-section" aria-labelledby="feedTitle">
-      <div class="feed-heading">
-        <div>
-          <p id="feedEyebrow" class="eyebrow">CLEAN FEED</p>
-          <h2 id="feedTitle">为你筛选</h2>
-          <p id="statusText" class="status-text" aria-live="polite">正在准备过滤器…</p>
-        </div>
-        <div class="stats" aria-label="过滤统计">
-          <div><strong id="acceptedCount">0</strong><span>已通过</span></div>
-          <div><strong id="rejectedCount">0</strong><span>已过滤</span></div>
-          <div><strong id="inspectedCount">0</strong><span>已检查</span></div>
-        </div>
-      </div>
-
-      <div id="reasonSummary" class="reason-summary" hidden></div>
-      <div id="videoGrid" class="video-grid" aria-live="polite"></div>
-      <div id="skeletonGrid" class="video-grid skeleton-grid" aria-hidden="true"></div>
-
-      <div id="emptyState" class="empty-state" hidden>
-        <span class="empty-icon">筛</span>
-        <h3 id="emptyTitle">暂时没有足够的通过结果</h3>
-        <p id="emptyMessage">过滤器已经检查了本轮候选。可以放宽门槛，或稍后换一批。</p>
-      </div>
-
-      <button id="loadMoreButton" class="button load-more" type="button">自动加载更多视频</button>
-    </section>
   </main>
 
   <dialog id="markedDialog" class="marked-dialog" aria-labelledby="markedDialogTitle">

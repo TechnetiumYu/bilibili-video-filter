@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "B站视频过滤器",
-  "version": "0.7.0",
-  "description": "高速过滤B站推荐流、稳妥过滤搜索结果，支持无限滚动、话题门槛和标记样本。",
+  "version": "0.8.0",
+  "description": "直接在B站首页和搜索结果中按关键词、播放量、UP主粉丝数和特殊话题过滤视频。",
   "permissions": ["storage"],
   "host_permissions": [
     "https://api.bilibili.com/*",
@@ -10,8 +10,15 @@
     "http://localhost/*"
   ],
   "action": {
-    "default_title": "打开 B站视频过滤器"
+    "default_title": "过滤设置与标记库"
   },
+  "options_ui": {"page": "feed.html", "open_in_tab": true},
+  "content_scripts": [{
+    "matches": ["https://www.bilibili.com/*", "https://search.bilibili.com/*"],
+    "js": ["page-adapter.js", "content.js"],
+    "css": ["content.css"],
+    "run_at": "document_start"
+  }],
   "background": {
     "service_worker": "background.js"
   }
