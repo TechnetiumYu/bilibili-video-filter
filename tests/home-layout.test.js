@@ -85,5 +85,77 @@ test("首页轮播在全部视频被隐藏后保持原生高度，并随窗口�
     assert.equal(await page.locator(".bvf-card-actions").first().evaluate(el => el.style.display), "flex");
     t.diagnostic(JSON.stringify(measurements));
     await page.close();
+    await t.test("显式网格位置中的通过视频按原顺序连续补位，待查项排到后面", async () => {
+      const compactPage = await browser.newPage({viewport: {width: 1200, height: 900}});
+      await compactPage.setContent(`<style>
+        .grid{display:grid;grid-template-columns:repeat(5,180px);gap:20px}
+        .recommended-swipe{grid-area:1/1/3/3;min-height:220px}
+        .col_3{height:100px}.bili-video-card{height:100px}
+      </style><div class="grid"><div class="recommended-swipe">轮播</div>
+      ${["rejected", "pending", "error", "accepted", "rejected", "accepted", "accepted", "accepted"]
+        .map((state, index) => {
+          const row = index < 6 ? Math.floor(index / 3) + 1 : 3;
+          const column = index < 6 ? index % 3 + 3 : index - 5;
+          return `<div class="col_3" style="grid-row:${row};grid-column:${column}">
+            <div class="bili-video-card" id="card-${index}" data-test-state="${state}"><a href="https://www.bilibili.com/video/BV1tG411M7Yb/">视频${index}</a></div></div>`;
+        }).join("")}</div>`);
+      await compactPage.addStyleTag({path: path.join(root, "content.css")});
+      await compactPage.addScriptTag({path: path.join(root, "page-adapter.js")});
+      const result = await compactPage.evaluate(() => {
+        document.documentElement.setAttribute("data-bvf-active", "");
+        const originals = [...document.querySelectorAll(".col_3")];
+        const roots = BiliPageAdapter.cards(document);
+        for (const node of roots) {
+          node.dataset.bvfState = node.querySelector("[data-test-state]").dataset.testState;
+          if (node.dataset.bvfState === "accepted") node.querySelector(".bili-video-card").setAttribute("data-bvf-approved", "");
+        }
+        BiliPageAdapter.compact(document, roots);
+        const boxes = roots.filter(node => node.dataset.bvfState === "accepted").map(node => ({
+          id: node.querySelector(".bili-video-card").id,
+          x: node.getBoundingClientRect().x, y: node.getBoundingClientRect().y,
+        }));
+        const grid = document.querySelector(".grid").getBoundingClientRect();
+        const pending = roots.find(node => node.dataset.bvfState === "pending").getBoundingClientRect();
+        return {boxes, grid: {x: grid.x, y: grid.y}, pending: {x: pending.x, y: pending.y},
+          collapsed: roots.filter(node => ["error", "rejected"].includes(node.dataset.bvfState))
+            .every(node => node.getBoundingClientRect().width === 0 && node.getBoundingClientRect().height === 0),
+          sameNodes: originals.every((node, index) => document.querySelectorAll(".col_3")[index] === node),
+          roots: roots.map(node => node.className)};
+      });
+      assert.deepEqual(result.roots, Array(8).fill("col_3"), "必须隐藏实际列包装而不是仅隐藏内部卡片");
+      assert.equal(result.collapsed, true);
+      assert.equal(result.sameNodes, true, "保留B站框架持有的DOM节点与原始顺序");
+      assert.deepEqual(result.boxes.map(box => box.id), ["card-3", "card-5", "card-6", "card-7"]);
+      assert.ok(Math.abs(result.boxes[0].x - result.grid.x - 400) < 1);
+      assert.ok(Math.abs(result.boxes[0].y - result.grid.y) < 1);
+      assert.ok(Math.abs(result.boxes[1].x - result.boxes[0].x - 200) < 1);
+      assert.ok(Math.abs(result.boxes[2].y - result.boxes[0].y) < 1);
+      assert.ok(result.boxes[3].y > result.boxes[0].y);
+      assert.ok(result.pending.y >= result.boxes[3].y, "待查占位不能插在已通过的视频之间");
+      await compactPage.close();
+    });
+    await t.test("搜索结果外层列包装折叠后连续排列，退出时恢复原布局标记", async () => {
+      const searchPage = await browser.newPage();
+      await searchPage.setContent(`<style>.row{display:flex;flex-wrap:wrap;width:800px}.col{width:200px;height:120px}</style>
+        <div class="row">${["rejected", "pending", "accepted", "error", "accepted"].map((state, index) =>
+          `<div class="col" data-test-state="${state}"><div class="bili-video-card"><a href="/video/BV1tG411M7Yb">视频${index}</a></div></div>`).join("")}</div>`);
+      await searchPage.addStyleTag({path: path.join(root, "content.css")});
+      await searchPage.addScriptTag({path: path.join(root, "page-adapter.js")});
+      const result = await searchPage.evaluate(() => {
+        document.documentElement.setAttribute("data-bvf-active", "");
+        const roots = BiliPageAdapter.cards(document);
+        roots.forEach(node => { node.dataset.bvfState = node.dataset.testState; });
+        BiliPageAdapter.compact(document, roots);
+        const accepted = roots.filter(node => node.dataset.bvfState === "accepted").map(node => node.getBoundingClientRect().toJSON());
+        const x = document.querySelector(".row").getBoundingClientRect().x;
+        BiliPageAdapter.clearLayout(document);
+        return {accepted, x, remaining: document.querySelectorAll("[data-bvf-flow], [data-bvf-item]").length};
+      });
+      assert.ok(Math.abs(result.accepted[0].x - result.x) < 1);
+      assert.ok(Math.abs(result.accepted[1].x - result.x - 200) < 1);
+      assert.equal(result.accepted[0].y, result.accepted[1].y);
+      assert.equal(result.remaining, 0);
+      await searchPage.close();
+    });
   } finally { await browser.close(); }
 });

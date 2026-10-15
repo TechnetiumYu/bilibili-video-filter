@@ -138,6 +138,7 @@
     observer.unobserve(record.root);
     record.root.removeAttribute("data-bvf-state");
     record.root.removeAttribute("data-bvf-label");
+    record.root.removeAttribute("data-bvf-item");
     record.root.querySelector(".bvf-card-actions")?.remove();
     record.root.querySelectorAll("[data-bvf-approved]").forEach(child => child.removeAttribute("data-bvf-approved"));
   }
@@ -156,7 +157,7 @@
     activate();
     if (mode === "feed") globalThis.BiliHomeLayout.preserve(document);
     else globalThis.BiliHomeLayout.clear(document);
-    if (!mode) return;
+    if (!mode) { Adapter.clearLayout(document); return; }
     mountPanel();
     const found = new Set(Adapter.cards(document));
     for (const [root, record] of records) {
@@ -182,6 +183,7 @@
         if (decisions.has(bvid)) apply(record, decisions.get(bvid));
       }
     }
+    Adapter.compact(document, records.keys());
     updateSummary();
     pump();
   }
@@ -216,6 +218,7 @@
       }
     } finally {
       running = false;
+      if (mode) Adapter.compact(document, records.keys());
       updateSummary();
       pump();
     }

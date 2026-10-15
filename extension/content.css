@@ -35,6 +35,21 @@ html[data-bvf-active] [data-bvf-state="error"]::after {
 html[data-bvf-active] [data-bvf-state="rejected"] {
   display: none !important;
 }
+/* 保留 DOM 顺序与 B站事件绑定，仅让通过的视频在布局中连续排在前面。 */
+html[data-bvf-active] [data-bvf-flow] {
+  grid-auto-flow: row dense !important;
+}
+html[data-bvf-active] [data-bvf-flow] > [data-bvf-item] {
+  grid-row: auto !important;
+  grid-column: auto !important;
+  order: 0 !important;
+}
+html[data-bvf-active] [data-bvf-flow] > [data-bvf-item][data-bvf-state="pending"] {
+  order: 1 !important;
+}
+html[data-bvf-active] [data-bvf-state="error"] {
+  display: none !important;
+}
 html[data-bvf-active] .bvf-card-actions {
   display: flex;
   align-items: center;

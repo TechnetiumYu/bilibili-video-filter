@@ -1,6 +1,6 @@
 {
   "name": "bilibili-video-filter",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "A local-first Bilibili recommendation feed filter browser extension.",
   "scripts": {
