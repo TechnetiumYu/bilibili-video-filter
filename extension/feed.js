@@ -396,7 +396,7 @@
     elements.settingsError.textContent = "";
     settings = result.settings;
     await storageSet("local", {[SETTINGS_KEY]: settings});
-    document.querySelector("#saveStatus").textContent = "已保存，B站首页与搜索结果正在按新规则重新检查。";
+    document.querySelector("#saveStatus").textContent = "已保存，已打开的 B站首页正在按新规则重新检查；其他页面不筛选。";
   }
 
   elements.form.addEventListener("submit", event => {

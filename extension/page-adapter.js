@@ -9,7 +9,6 @@
   function pageMode(href) {
     const url = new URL(href);
     if (url.hostname === "www.bilibili.com" && ["/", "/index.html"].includes(url.pathname)) return "feed";
-    if (url.hostname === "search.bilibili.com" && ["/all", "/video", "/all/", "/video/", "/"].includes(url.pathname)) return "search";
     return null;
   }
 

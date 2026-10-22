@@ -120,11 +120,10 @@ test("null和空字符串数值仍严格视为未知，不能以零绕过门槛"
   }
 });
 
-test("页面适配只覆盖首页和视频搜索，按外层网格识别卡片", () => {
+test("页面适配仅允许首页推荐流，按外层网格识别卡片", () => {
   assert.equal(Adapter.pageMode("https://www.bilibili.com/"), "feed");
-  assert.equal(Adapter.pageMode("https://search.bilibili.com/all?keyword=test"), "search");
-  assert.equal(Adapter.pageMode(`https://www.bilibili.com/video/${BV_A}`), null);
-  assert.equal(Adapter.pageMode("https://search.bilibili.com/bangumi?keyword=test"), null);
+  assert.equal(Adapter.pageMode("https://www.bilibili.com/index.html?spm_id_from=test"), "feed");
+  for (const url of excludedPages) assert.equal(Adapter.pageMode(url), null, url);
   const dom = new JSDOM(`<div class="feed-card"><div class="bili-video-card"><a href="//www.bilibili.com/video/${BV_A}/?x=1">标题</a></div></div>`);
   assert.equal(Adapter.cards(dom.window.document).length, 1);
   assert.equal(Adapter.cards(dom.window.document)[0].className, "feed-card");
@@ -132,9 +131,29 @@ test("页面适配只覆盖首页和视频搜索，按外层网格识别卡片",
   dom.window.close();
 });
 
-function contentPage(handler) {
+const excludedPages = [
+  "https://search.bilibili.com/?keyword=test",
+  "https://search.bilibili.com/all?keyword=test",
+  "https://search.bilibili.com/video/?keyword=test",
+  "https://search.bilibili.com/bangumi?keyword=test",
+  "https://space.bilibili.com/42",
+  "https://space.bilibili.com/42/upload/video",
+  "https://space.bilibili.com/42/search/video?keyword=test",
+  `https://www.bilibili.com/video/${BV_A}`,
+  "https://www.bilibili.com/v/dynamic",
+  "https://t.bilibili.com/",
+  "https://www.bilibili.com/medialist/play/ml42",
+  "https://www.bilibili.com/account/history",
+];
+
+test("扩展声明不再向搜索域名或UP主空间注入脚本和样式", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(extension, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.content_scripts.flatMap(script => script.matches), ["https://www.bilibili.com/*"]);
+});
+
+function contentPage(handler, url = "https://www.bilibili.com/") {
   const dom = new JSDOM('<!DOCTYPE html><html><body><div id="grid"></div></body></html>', {
-    url: "https://www.bilibili.com/", runScripts: "outside-only",
+    url, runScripts: "outside-only",
   });
   const win = dom.window;
   const changes = [];
@@ -158,6 +177,9 @@ function contentPage(handler) {
     }},
     storage: {local: {get: async () => ({})}, onChanged: {addListener(fn) { changes.push(fn); }}},
   };
+  const style = win.document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(extension, "content.css"), "utf8");
+  win.document.head.append(style);
   for (const file of ["page-adapter.js", "home-layout.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
   const addCard = bvid => {
     const card = win.document.createElement("div");
@@ -216,19 +238,17 @@ test("旧卡片请求晚返回不会放行已替换的新卡片", async () => {
   } finally { page.dom.window.close(); }
 });
 
-test("搜索页卡片隐藏外层，失败后可手动重试且不自动重试", async () => {
+test("首页卡片失败后可手动重试且不自动重试", async () => {
   let failed = true;
   const page = contentPage(payload => ({ok: true, rateLimited: failed, results: payload.bvids.map(bvid => failed
     ? {bvid, status: "error", reasons: ["HTTP 412"]} : accepted(bvid))}));
   try {
-    page.dom.reconfigure({url: "https://search.bilibili.com/all?keyword=sample"});
-    page.win.dispatchEvent(new page.win.PopStateEvent("popstate"));
     const card = page.win.document.createElement("div");
     card.className = "video-list-item";
-    card.innerHTML = `<div class="bili-video-card"><a href="https://www.bilibili.com/video/${BV_A}">搜索视频</a></div>`;
+    card.innerHTML = `<div class="bili-video-card"><a href="https://www.bilibili.com/video/${BV_A}">首页视频</a></div>`;
     page.win.document.querySelector("#grid").append(card);
     await until(() => card.dataset.bvfState === "error");
-    assert.equal(page.calls[0].mode, "search");
+    assert.equal(page.calls[0].mode, "feed");
     await new Promise(resolve => setTimeout(resolve, 120));
     assert.equal(page.calls.length, 1);
     assert.equal(card.querySelector(".bvf-card-actions"), null);
@@ -237,6 +257,54 @@ test("搜索页卡片隐藏外层，失败后可手动重试且不自动重试",
     retry.click();
     await until(() => card.dataset.bvfState === "accepted");
     assert.equal(card.querySelector(".bili-video-card").hasAttribute("data-bvf-approved"), true);
+  } finally { page.dom.window.close(); }
+});
+
+test("搜索、UP主空间等非首页即使加载内容脚本也不检查或改动卡片", async t => {
+  for (const url of excludedPages) await t.test(url, async () => {
+    const page = contentPage(() => { throw new Error("非首页不得发起筛选请求"); }, url);
+    try {
+      const card = page.addCard(BV_A);
+      const original = card.outerHTML;
+      page.changes[0]({biliFilterSettingsV2: {newValue: {}}}, "local");
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(page.calls.length, 0);
+      assert.equal(page.win.document.documentElement.hasAttribute("data-bvf-active"), false);
+      assert.equal(page.win.document.querySelector("#bvf-page-controls"), null);
+      assert.equal(card.outerHTML, original);
+      assert.equal(page.win.getComputedStyle(card.querySelector(".bili-video-card")).visibility, "visible");
+    } finally { page.dom.window.close(); }
+  });
+});
+
+test("离开首页清理布局和操作栏，迟到响应不重新开启筛选，返回首页才恢复", async () => {
+  let resolvePending;
+  const page = contentPage(payload => payload.bvids.includes(BV_B)
+    ? new Promise(resolve => { resolvePending = resolve; })
+    : {ok: true, results: payload.bvids.map(accepted)});
+  try {
+    page.win.document.querySelector("#grid").style.display = "grid";
+    const first = page.addCard(BV_A);
+    await until(() => first.dataset.bvfState === "accepted");
+    const pending = page.addCard(BV_B);
+    await until(() => resolvePending);
+    page.win.history.pushState({}, "", `/video/${BV_C}`);
+    page.win.dispatchEvent(new page.win.PopStateEvent("popstate"));
+    const checks = page.calls.length;
+    resolvePending({ok: true, results: [accepted(BV_B)]});
+    page.changes[0]({biliFilterSettingsV2: {newValue: {}}}, "local");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(page.calls.length, checks);
+    assert.equal(page.win.document.querySelector("[data-bvf-flow], [data-bvf-item], [data-bvf-state], [data-bvf-approved], .bvf-card-actions"), null);
+    assert.equal(page.win.document.querySelector("#bvf-page-controls").hidden, true);
+    assert.equal(page.win.getComputedStyle(first.querySelector(".bili-video-card")).visibility, "visible");
+    pending.remove();
+    page.win.history.pushState({}, "", "/");
+    page.win.dispatchEvent(new page.win.PopStateEvent("popstate"));
+    await until(() => first.dataset.bvfState === "accepted");
+    assert.equal(page.win.document.documentElement.hasAttribute("data-bvf-active"), true);
+    assert.equal(page.win.document.querySelector("#bvf-page-controls").hidden, false);
+    assert.equal(page.calls.length, checks + 1);
   } finally { page.dom.window.close(); }
 });
 
