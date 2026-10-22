@@ -37,7 +37,7 @@ class BiliApiError extends Error {
 }
 
 chrome.action.onClicked.addListener(() => {
-  chrome.runtime.openOptionsPage();
+  chrome.tabs.create({url: chrome.runtime.getURL("feed.html")});
 });
 
 function delay(ms) {
@@ -685,7 +685,10 @@ function updateMarkedVideo(bvid, changes = {}) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handlers = {
     "bili-filter-check-page": () => filterPageVideos(message.bvids, message.mode),
-    "bili-filter-open-settings": async () => { await chrome.runtime.openOptionsPage(); return {}; },
+    "bili-filter-open-settings": async () => {
+      await chrome.tabs.create({url: chrome.runtime.getURL("feed.html?settings=1")});
+      return {};
+    },
     "bili-filter-mark-page": () => markPageVideo(message.bvid, message.context),
     "bili-filter-update-mark": () => updateMarkedVideo(message.bvid, message.changes),
     "bili-filter-home-candidates": () => fetchHomeCandidates(message.options),

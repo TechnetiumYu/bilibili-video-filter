@@ -336,7 +336,7 @@ test("离开首页清理布局和操作栏，迟到响应不重新开启筛选�
   } finally { page.dom.window.close(); }
 });
 
-test("设置页保留旧设置与样本，保存后不再请求推荐或搜索接口", async () => {
+test("完整规则编辑器保留旧设置与样本，保存本身不请求推荐或搜索接口", async () => {
   const dom = new JSDOM(fs.readFileSync(path.join(extension, "feed.html"), "utf8"), {
     url: "https://extension.invalid/feed.html", runScripts: "outside-only",
   });
@@ -367,7 +367,8 @@ test("设置页保留旧设置与样本，保存后不再请求推荐或搜索�
     assert.equal(storage.biliFilterSettingsV2.continuousLoad, false);
     assert.equal(calls.length, 0);
     assert.equal(win.document.querySelector("#searchForm"), null);
-    assert.equal(win.document.querySelector("#videoGrid"), null);
+    assert.ok(win.document.querySelector("#videoGrid"));
+    assert.ok(win.document.querySelector("#settingsDialog #settingsForm"));
     assert.equal(win.document.querySelector("#settingsError").textContent, "");
   } finally { dom.window.close(); }
 });

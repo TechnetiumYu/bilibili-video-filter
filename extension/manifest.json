@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "B站视频过滤器",
-  "version": "0.8.6",
-  "description": "仅在B站首页推荐流中按关键词、播放量、UP主粉丝数和特殊话题过滤视频，不干扰搜索和UP主空间。",
+  "version": "0.9.0",
+  "description": "极简独立视频界面与B站首页过滤，支持可折叠筛选栏、话题门槛、标记和连续加载。",
   "permissions": ["storage"],
   "host_permissions": [
     "https://api.bilibili.com/*",
@@ -10,7 +10,7 @@
     "http://localhost/*"
   ],
   "action": {
-    "default_title": "过滤设置与标记库"
+    "default_title": "打开 B站视频过滤器"
   },
   "options_ui": {"page": "feed.html", "open_in_tab": true},
   "content_scripts": [{

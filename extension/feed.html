@@ -4,31 +4,80 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>B站视频过滤器 · 设置与标记库</title>
+  <title>B站视频过滤器</title>
   <link rel="stylesheet" href="feed.css">
 </head>
-<body class="settings-only">
+<body class="minimal-app">
   <header class="topbar">
     <a class="brand" href="feed.html" aria-label="B站视频过滤器首页">
-      <span class="brand-mark">滤</span>
-      <span><strong>B站视频过滤器</strong><small>原页面过滤 · 设置与标记库</small></span>
+      <span><strong>B站视频过滤器</strong><small>让推荐更合心意</small></span>
     </a>
     <div class="topbar-actions">
-      <button id="markedLibraryButton" class="button secondary marked-library-button" type="button">标记库 <strong id="markedCount">0</strong></button>
-      <a class="button primary" href="https://www.bilibili.com/" target="_blank" rel="noreferrer">打开 B站</a>
+      <span id="filterStatus" class="filter-status">筛选已开启</span>
+      <button id="toggleSidebarButton" class="button ghost" type="button" aria-controls="filterSidebar" aria-expanded="true">筛选</button>
+      <button id="markedLibraryButton" class="button ghost marked-library-button" type="button">标记库 <strong id="markedCount">0</strong></button>
+      <a class="button secondary" href="https://www.bilibili.com/" target="_blank" rel="noreferrer">打开 B站 <span aria-hidden="true">↗</span></a>
     </div>
   </header>
 
-  <main class="layout">
-    <aside class="settings-panel" aria-labelledby="settingsTitle">
+  <div class="app-layout">
+    <aside id="filterSidebar" class="filter-sidebar" aria-labelledby="sidebarTitle">
+      <div class="sidebar-heading">
+        <h2 id="sidebarTitle">筛选概览</h2>
+        <button id="collapseSidebar" class="text-button sidebar-collapse" type="button" aria-controls="filterSidebar" aria-expanded="true">收起 <span aria-hidden="true">‹</span></button>
+      </div>
+      <section class="summary-block" aria-labelledby="keywordsTitle">
+        <h3 id="keywordsTitle">屏蔽关键词</h3>
+        <div id="keywordChips" class="keyword-chips"><span class="summary-empty">暂无屏蔽关键词</span></div>
+      </section>
+      <section class="summary-block" aria-labelledby="thresholdsTitle">
+        <h3 id="thresholdsTitle">全局门槛</h3>
+        <dl class="threshold-summary">
+          <div><dt>播放量</dt><dd id="summaryViews">不限</dd></div>
+          <div><dt>UP 主粉丝</dt><dd id="summaryFollowers">不限</dd></div>
+        </dl>
+      </section>
+      <section class="summary-block" aria-labelledby="topicsTitle">
+        <h3 id="topicsTitle">特殊话题</h3>
+        <div id="summaryTopics" class="summary-topics"><p class="summary-empty">暂无特殊话题规则</p></div>
+      </section>
+      <div class="sidebar-options">
+        <label class="quick-switch" for="quickOnlyVideos"><span>仅保留普通视频</span><input id="quickOnlyVideos" type="checkbox" role="switch" checked></label>
+        <label class="quick-switch" for="quickContinuousLoad"><span>连续加载</span><input id="quickContinuousLoad" type="checkbox" role="switch" checked></label>
+      </div>
+      <button id="editRulesButton" class="button ghost edit-rules-button" type="button">编辑完整规则 <span aria-hidden="true">↗</span></button>
+      <p class="sidebar-footnote">设置与缓存保存在本地。<br>收起侧栏不会关闭筛选。</p>
+    </aside>
+
+    <main class="browse-section" aria-labelledby="browseTitle">
+      <div class="browse-heading">
+        <div class="browse-heading-title">
+          <button id="expandSidebar" class="button ghost" type="button" aria-controls="filterSidebar" aria-expanded="true" hidden><span aria-hidden="true">☰</span> 展开筛选</button>
+          <h1 id="browseTitle">视频</h1>
+        </div>
+        <p id="browseSummary" class="browse-summary">只呈现通过筛选的视频</p>
+      </div>
+      <div id="videoGrid" class="video-grid"></div>
+      <footer class="browse-footer">
+        <p id="browseStatus" class="browse-status" role="status">正在准备视频…</p>
+        <div class="browse-footer-actions">
+          <button id="loadMoreButton" class="button ghost" type="button">加载更多</button>
+          <button id="retryFeedButton" class="button ghost" type="button" hidden>重试失败项</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
+    <section class="settings-panel">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">FILTER</p>
-          <h1 id="settingsTitle">过滤门槛</h1>
+          <h2 id="settingsTitle">过滤门槛</h2>
         </div>
-        <span class="strict-pill">全部通过才显示</span>
+        <div class="settings-heading-actions"><span class="strict-pill">全部通过才显示</span><button id="closeSettingsDialog" class="dialog-close" type="button" aria-label="关闭完整规则">×</button></div>
       </div>
-      <p class="settings-intro">仅在 B站首页推荐流自动筛选，搜索、UP主空间、播放页、动态、收藏和历史记录不筛选。首页右下角可查看检查统计、重试失败项；保存设置后，已打开的首页会自动重新检查。</p>
+      <p class="settings-intro">规则同时用于当前视频页和 B站首页推荐流；搜索、UP主空间、播放页、动态、收藏和历史记录不筛选。保存后，两种界面会应用同一套新规则。收起侧栏只改变布局，不会关闭筛选。</p>
 
       <form id="settingsForm" novalidate>
         <fieldset class="home-content-options">
@@ -114,9 +163,8 @@
         <p>设置和缓存只保存在浏览器中。粉丝数、详情或必要的话题分类无法确认时，视频不会被放行。</p>
         <button id="clearCacheButton" class="text-button" type="button">清除全部筛选缓存</button>
       </div>
-    </aside>
-
-  </main>
+    </section>
+  </dialog>
 
   <dialog id="markedDialog" class="marked-dialog" aria-labelledby="markedDialogTitle">
     <div class="marked-dialog-shell">
@@ -148,5 +196,6 @@
   <script src="filter-core.js"></script>
   <script src="marked-core.js"></script>
   <script src="feed.js"></script>
+  <script src="browse.js"></script>
 </body>
 </html>

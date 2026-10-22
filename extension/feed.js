@@ -43,6 +43,7 @@
 
   let settings = Core.normalizeSettings(Core.DEFAULT_SETTINGS);
   let markedVideos = {};
+  let ready = false;
   function runtimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, response => {
@@ -93,11 +94,6 @@
 
   function updateMarkedCount() {
     elements.markedCount.textContent = String(Object.keys(markedVideos).length);
-    document.querySelectorAll(".mark-video-button[data-bvid]").forEach(button => {
-      const saved = Boolean(markedVideos[button.dataset.bvid]);
-      button.disabled = saved;
-      button.textContent = saved ? "✓ 已标记" : "标记待分析";
-    });
   }
 
   function discussionExport() {
@@ -400,10 +396,42 @@
       return;
     }
     elements.settingsError.textContent = "";
-    settings = result.settings;
-    await storageSet("local", {[SETTINGS_KEY]: settings});
-    document.querySelector("#saveStatus").textContent = "已保存，已打开的 B站首页正在按新规则重新检查；其他页面不筛选。";
+    await persistSettings(result.settings);
+    document.querySelector("#saveStatus").textContent = "已保存，视频页和已打开的 B站首页将按新规则筛选。";
   }
+
+  async function persistSettings(next) {
+    const previous = settings;
+    settings = next;
+    try { await storageSet("local", {[SETTINGS_KEY]: next}); }
+    catch (error) { settings = previous; throw error; }
+    writeSettingsForm(settings);
+    window.dispatchEvent(new CustomEvent("bili-filter-settings-changed", {detail: settings}));
+  }
+
+  function openRules() {
+    const dialog = document.querySelector("#settingsDialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  async function refreshMarks() {
+    markedVideos = MarkedCore.normalizeCollection(await storageGet("local", MARKED_VIDEOS_KEY) || {});
+    renderMarkedLibrary();
+    window.dispatchEvent(new CustomEvent("bili-filter-marks-changed", {detail: markedVideos}));
+  }
+
+  globalThis.BiliSettingsUI = {
+    isReady: () => ready,
+    getSettings: () => settings,
+    getMarked: () => markedVideos,
+    openRules,
+    refreshMarks,
+    updateQuickSettings: patch => persistSettings(Core.normalizeSettings({...settings,
+      onlyVideos: typeof patch.onlyVideos === "boolean" ? patch.onlyVideos : settings.onlyVideos,
+      continuousLoad: typeof patch.continuousLoad === "boolean" ? patch.continuousLoad : settings.continuousLoad,
+    })),
+  };
+  document.querySelector("#closeSettingsDialog").addEventListener("click", () => document.querySelector("#settingsDialog").close());
 
   elements.form.addEventListener("submit", event => {
     saveSettings(event).catch(error => { elements.settingsError.textContent = error.message; });
@@ -450,6 +478,22 @@
     });
   });
   elements.exportMarkedButton.addEventListener("click", exportDiscussionData);
+  chrome.storage.onChanged?.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes[MARKED_VIDEOS_KEY]) {
+      markedVideos = MarkedCore.normalizeCollection(changes[MARKED_VIDEOS_KEY].newValue || {});
+      renderMarkedLibrary();
+      window.dispatchEvent(new CustomEvent("bili-filter-marks-changed", {detail: markedVideos}));
+    }
+    if (changes[SETTINGS_KEY] && ready) {
+      const next = Core.normalizeSettings(changes[SETTINGS_KEY].newValue || Core.DEFAULT_SETTINGS);
+      if (JSON.stringify(next) !== JSON.stringify(settings)) {
+        settings = next;
+        writeSettingsForm(settings);
+        window.dispatchEvent(new CustomEvent("bili-filter-settings-changed", {detail: settings}));
+      }
+    }
+  });
 
   async function initialize() {
     const [stored, storedMarked] = await Promise.all([
@@ -462,6 +506,8 @@
     if (!stored) await storageSet("local", {[SETTINGS_KEY]: settings});
     writeSettingsForm(settings);
     renderMarkedLibrary();
+    ready = true;
+    window.dispatchEvent(new CustomEvent("bili-filter-settings-ready", {detail: settings}));
     await storageRemove("local", LEGACY_FILTER_CHECKPOINT_KEY).catch(() => undefined);
   }
 
