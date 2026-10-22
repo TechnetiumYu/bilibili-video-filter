@@ -6,6 +6,7 @@
   "use strict";
 
   const DEFAULT_SETTINGS = Object.freeze({
+    onlyVideos: true,
     blockedKeywords: ["破防", "急了", "对线", "开战", "逆天"],
     keywordScopes: {
       title: true,
@@ -75,6 +76,7 @@
   function normalizeSettings(input = {}) {
     const scopes = input.keywordScopes || {};
     return {
+      onlyVideos: input.onlyVideos !== false,
       blockedKeywords: Array.from(new Set((input.blockedKeywords || [])
         .map(value => String(value).trim())
         .filter(Boolean))),

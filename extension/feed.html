@@ -31,6 +31,11 @@
       <p class="settings-intro">仅在 B站首页推荐流自动筛选，搜索、UP主空间、播放页、动态、收藏和历史记录不筛选。首页右下角可查看检查统计、重试失败项；保存设置后，已打开的首页会自动重新检查。</p>
 
       <form id="settingsForm" novalidate>
+        <fieldset>
+          <legend>首页内容类型</legend>
+          <label><input id="onlyVideos" type="checkbox">仅保留普通视频（默认开启）</label>
+          <small>隐藏推荐区的直播、商品、活动、外链和无法确认类型的卡片；轮播只展示通过筛选的视频，无合格内容时收起。关闭后不额外筛选内容类型，原有视频门槛仍生效。导航和搜索框不受影响。</small>
+        </fieldset>
         <label class="field">
           <span>屏蔽关键词</span>
           <textarea id="blockedKeywords" rows="5" placeholder="每行一个，也可以用逗号分隔"></textarea>

@@ -20,7 +20,23 @@
     return "";
   }
 
-  function cards(document) {
+  // 只信任内容的主跳转目标，不把外链参数里的 BV 号或 UP主页链接当作视频。
+  function ordinaryVideoId(card) {
+    const primary = card.matches("a[href]") ? card : card.querySelector("a.bili-video-card__image--link[href], a.bili-video-card__info--tit[href]");
+    const links = primary ? [primary] : [...card.querySelectorAll("a[href]")].filter(link => {
+      try { return new URL(link.getAttribute("href"), card.ownerDocument.URL).hostname !== "space.bilibili.com"; }
+      catch (_) { return true; }
+    });
+    const link = links[0];
+    if (!link) return "";
+    try {
+      const url = new URL(link.getAttribute("href"), card.ownerDocument.URL);
+      if (!["http:", "https:"].includes(url.protocol) || url.hostname !== "www.bilibili.com") return "";
+      return url.pathname.match(/^\/video\/(BV[0-9A-Za-z]{10})\/?$/)?.[1] || "";
+    } catch (_) { return ""; }
+  }
+
+  function cards(document, onlyVideos = false) {
     const unique = new Set();
     for (const card of document.querySelectorAll(CARD_SELECTOR)) {
       if (card.closest(".recommended-swipe, .bili-banner, .bili-header__banner")) continue;
@@ -38,6 +54,29 @@
         probe = parent;
       }
       unique.add(item);
+    }
+    if (onlyVideos) {
+      // 只扩展已识别的推荐网格与 feed-card，不扫描导航、横幅或任意页面链接。
+      for (const card of document.querySelectorAll(".feed-card")) {
+        if (!card.closest(".recommended-swipe, .bili-banner, .bili-header__banner")) unique.add(card);
+      }
+      const parents = new Set([...unique].map(item => item.parentElement));
+      for (const carousel of document.querySelectorAll(".recommended-swipe")) parents.add(carousel.parentElement);
+      for (const parent of parents) {
+        if (!parent || parent === document.body) continue;
+        const style = document.defaultView.getComputedStyle(parent);
+        if (!style.display.includes("grid") && !(style.display.includes("flex") && style.flexWrap === "wrap")) continue;
+        for (const child of parent.children) {
+          if (child.matches(".recommended-swipe, .bili-banner, .bili-header__banner, script, style, template, nav, header, footer")) continue;
+          unique.add(child);
+        }
+      }
+      // 推荐 wrapper 内有旧版样式卡片时只保留外层占位，避免重复处理。
+      for (const item of unique) {
+        for (let parent = item.parentElement; parent; parent = parent.parentElement) {
+          if (unique.has(parent)) { unique.delete(item); break; }
+        }
+      }
     }
     return [...unique];
   }
@@ -66,5 +105,5 @@
     document.querySelectorAll("[data-bvf-flow]").forEach(node => node.removeAttribute("data-bvf-flow"));
     document.querySelectorAll("[data-bvf-item]").forEach(node => node.removeAttribute("data-bvf-item"));
   }
-  return {CARD_SELECTOR, pageMode, videoId, cards, compact, clearLayout};
+  return {CARD_SELECTOR, pageMode, videoId, ordinaryVideoId, cards, compact, clearLayout};
 });

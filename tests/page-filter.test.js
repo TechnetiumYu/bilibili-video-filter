@@ -151,7 +151,7 @@ test("扩展声明不再向搜索域名或UP主空间注入脚本和样式", () 
   assert.deepEqual(manifest.content_scripts.flatMap(script => script.matches), ["https://www.bilibili.com/*"]);
 });
 
-function contentPage(handler, url = "https://www.bilibili.com/") {
+function contentPage(handler, url = "https://www.bilibili.com/", settings = {}) {
   const dom = new JSDOM('<!DOCTYPE html><html><body><div id="grid"></div></body></html>', {
     url, runScripts: "outside-only",
   });
@@ -175,12 +175,12 @@ function contentPage(handler, url = "https://www.bilibili.com/") {
       calls.push(payload);
       Promise.resolve(handler(payload)).then(callback);
     }},
-    storage: {local: {get: async () => ({})}, onChanged: {addListener(fn) { changes.push(fn); }}},
+    storage: {local: {get: async () => ({biliFilterSettingsV2: settings})}, onChanged: {addListener(fn) { changes.push(fn); }}},
   };
   const style = win.document.createElement("style");
   style.textContent = fs.readFileSync(path.join(extension, "content.css"), "utf8");
   win.document.head.append(style);
-  for (const file of ["page-adapter.js", "home-layout.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
+  for (const file of ["page-adapter.js", "home-layout.js", "carousel-filter.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
   const addCard = bvid => {
     const card = win.document.createElement("div");
     card.className = "feed-card";
@@ -327,13 +327,154 @@ test("设置页保留旧设置与样本，保存后不再请求推荐或搜索�
   try {
     for (const file of ["filter-core.js", "marked-core.js", "feed.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
     await until(() => win.document.querySelector("#minFollowers").value === "12345");
+    assert.equal(win.document.querySelector("#onlyVideos").checked, true);
+    win.document.querySelector("#onlyVideos").checked = false;
     win.document.querySelector("#minFollowers").value = "23456";
     win.document.querySelector("#settingsForm").dispatchEvent(new win.Event("submit", {cancelable: true}));
     await until(() => win.document.querySelector("#saveStatus").textContent.includes("已保存"));
     assert.equal(storage.biliFilterSettingsV2.minFollowers, 23456);
+    assert.equal(storage.biliFilterSettingsV2.onlyVideos, false);
     assert.equal(calls.length, 0);
     assert.equal(win.document.querySelector("#searchForm"), null);
     assert.equal(win.document.querySelector("#videoGrid"), null);
     assert.equal(win.document.querySelector("#settingsError").textContent, "");
   } finally { dom.window.close(); }
+});
+
+test("仅视频开关默认开启，显式关闭不会被归一化或旧设置迁移覆盖", () => {
+  assert.equal(Core.DEFAULT_SETTINGS.onlyVideos, true);
+  assert.equal(Core.normalizeSettings({minFollowers: 12345}).onlyVideos, true);
+  assert.equal(Core.normalizeSettings({onlyVideos: false}).onlyVideos, false);
+  assert.equal(Core.validateSettings({onlyVideos: false}).settings.onlyVideos, false);
+});
+
+test("普通视频按主目标识别，外链BV参数、伪域名和直播附带BV链接不能冒充", () => {
+  const dom = new JSDOM('<div id="card"></div>', {url: "https://www.bilibili.com/"});
+  try {
+    const card = dom.window.document.querySelector("#card");
+    for (const href of [`/video/${BV_A}/?from=home`, `//www.bilibili.com/video/${BV_A}`]) {
+      card.innerHTML = `<a href="${href}">视频</a>`;
+      assert.equal(Adapter.ordinaryVideoId(card), BV_A);
+      assert.equal(Adapter.ordinaryVideoId(card.firstChild), BV_A);
+    }
+    for (const href of [`https://example.com/video/${BV_A}`, `https://example.com/?next=/video/${BV_A}`,
+      `https://www.bilibili.com.evil.test/video/${BV_A}`, "https://live.bilibili.com/42", "/bangumi/play/ep123", "javascript:void(0)"]) {
+      card.innerHTML = `<a href="${href}">主内容</a><a href="/video/${BV_A}">附带视频</a>`;
+      assert.equal(Adapter.ordinaryVideoId(card), "", href);
+    }
+  } finally { dom.window.close(); }
+});
+
+test("非视频推荐直接隐藏补位，不发起数据请求；关闭后恢复，视频门槛仍生效", async () => {
+  const page = contentPage(payload => ({ok: true, results: payload.bvids.map(accepted)}));
+  try {
+    page.win.document.querySelector("#grid").style.display = "grid";
+    const video = page.addCard(BV_A);
+    const navigation = page.win.document.createElement("nav");
+    navigation.innerHTML = '<a href="https://live.bilibili.com/">直播导航</a><input placeholder="搜索">';
+    page.win.document.body.prepend(navigation);
+    const nativeNavigation = navigation.outerHTML;
+    const nonVideos = ["https://live.bilibili.com/42", "https://show.bilibili.com/", "https://example.com/", "/blackboard/activity.html", ""]
+      .map((href, index) => {
+        const card = page.win.document.createElement("div");
+        card.className = index === 0 ? "feed-card" : "unknown-recommendation";
+        card.innerHTML = href ? `<a href="${href}">非视频推荐</a>` : "类型未知";
+        page.win.document.querySelector("#grid").append(card);
+        return card;
+      });
+    const disguised = page.win.document.createElement("div");
+    disguised.className = "feed-card";
+    disguised.innerHTML = `<div class="bili-video-card"><a href="https://example.com/?next=/video/${BV_B}">外链</a></div>`;
+    page.win.document.querySelector("#grid").append(disguised);
+    nonVideos.push(disguised);
+    await until(() => nonVideos.every(card => card.dataset.bvfState === "rejected") && video.dataset.bvfState === "accepted");
+    assert.deepEqual(page.calls.flatMap(call => call.bvids), [BV_A]);
+    assert.ok(nonVideos.every(card => page.win.getComputedStyle(card).display === "none"));
+    assert.equal(navigation.outerHTML, nativeNavigation);
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: false}}}, "local");
+    await until(() => video.dataset.bvfState === "accepted" && !nonVideos[0].hasAttribute("data-bvf-state"));
+    assert.ok(nonVideos.slice(0, 5).every(card => page.win.getComputedStyle(card).display !== "none"));
+    assert.equal(page.win.document.documentElement.hasAttribute("data-bvf-video-only"), false);
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: true}}}, "local");
+    await until(() => nonVideos.every(card => card.dataset.bvfState === "rejected"));
+  } finally { page.dom.window.close(); }
+});
+
+test("轮播仅展示经过后台确认的视频，去重、切换、全部拒绝收起和关闭恢复", async () => {
+  let rejectAll = false;
+  const page = contentPage(payload => ({ok: true, results: payload.bvids.map(bvid => rejectAll
+    ? {bvid, status: "rejected", reasons: ["播放量不足"]} : {...accepted(bvid), video: {bvid, title: `合格${bvid}`}})}));
+  try {
+    const carousel = page.win.document.createElement("div");
+    carousel.className = "recommended-swipe";
+    carousel.innerHTML = `<div class="carousel-inner">${["https://live.bilibili.com/42", `/video/${BV_A}`, `/video/${BV_C}`, `/video/${BV_A}`, "https://example.com/"]
+      .map(href => `<div class="carousel-item"><a href="${href}">原始轮播</a></div>`).join("")}</div><div class="carousel-footer">原始活动标题</div>`;
+    const original = [...carousel.querySelectorAll(".carousel-item")];
+    page.win.document.querySelector("#grid").append(carousel);
+    await until(() => carousel.querySelector(".bvf-carousel-view a"));
+    await until(() => carousel.querySelector(".bvf-carousel-controls span").textContent === "1 / 2");
+    assert.equal(carousel.querySelector(".bvf-carousel-view a").href, `https://www.bilibili.com/video/${BV_A}`);
+    [...carousel.querySelectorAll(".bvf-carousel-controls button")].find(button => button.textContent === "下一个").click();
+    assert.equal(carousel.querySelector(".bvf-carousel-view a").href, `https://www.bilibili.com/video/${BV_C}`);
+    assert.deepEqual(page.calls.flatMap(call => call.bvids).sort(), [BV_A, BV_C].sort());
+    assert.ok(original.every(node => node.parentElement.className === "carousel-inner"));
+    rejectAll = true;
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: true}}}, "local");
+    await until(() => original.every(node => node.dataset.bvfState === "rejected"));
+    assert.equal(page.win.getComputedStyle(carousel).display, "none");
+    assert.equal(carousel.querySelector(".bvf-carousel-view"), null);
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: false}}}, "local");
+    await until(() => !carousel.hasAttribute("data-bvf-carousel-filtered"));
+    assert.equal(carousel.querySelector("[data-bvf-state]"), null);
+    assert.notEqual(page.win.getComputedStyle(carousel).display, "none");
+    assert.deepEqual([...carousel.querySelectorAll(".carousel-item")], original);
+  } finally { page.dom.window.close(); }
+});
+
+test("已保存的关闭开关刷新后保持关闭，未知轮播和纯非视频推荐默认不放行", async () => {
+  for (const onlyVideos of [false, true]) {
+    const page = contentPage(() => { throw new Error("非视频不得发起请求"); }, "https://www.bilibili.com/", {onlyVideos});
+    try {
+      const card = page.win.document.createElement("div");
+      card.className = "feed-card";
+      card.innerHTML = '<a href="https://live.bilibili.com/42">直播</a>';
+      const carousel = page.win.document.createElement("div");
+      carousel.className = "recommended-swipe";
+      carousel.textContent = "无法识别结构的轮播";
+      page.win.document.querySelector("#grid").append(card, carousel);
+      await new Promise(resolve => setTimeout(resolve, 120));
+      assert.equal(page.calls.length, 0);
+      assert.equal(page.win.getComputedStyle(card).display === "none", onlyVideos);
+      assert.equal(page.win.getComputedStyle(carousel).display === "none", onlyVideos);
+    } finally { page.dom.window.close(); }
+  }
+});
+
+test("轮播请求晚返回不能覆盖关闭开关，重新开启后仍需重新确认", async () => {
+  let resolveCheck;
+  const page = contentPage(() => new Promise(resolve => { resolveCheck = resolve; }));
+  try {
+    const carousel = page.win.document.createElement("div");
+    carousel.className = "recommended-swipe";
+    carousel.innerHTML = `<div class="carousel-item"><a href="/video/${BV_A}">视频</a></div>`;
+    page.win.document.querySelector("#grid").append(carousel);
+    await until(() => resolveCheck);
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: false}}}, "local");
+    resolveCheck({ok: true, results: [accepted(BV_A)]});
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(carousel.hasAttribute("data-bvf-carousel-filtered"), false);
+    assert.equal(carousel.querySelector(".bvf-carousel-view"), null);
+    assert.equal(carousel.querySelector("[data-bvf-state]"), null);
+    assert.equal(page.calls.length, 1);
+    page.changes[0]({biliFilterSettingsV2: {newValue: {onlyVideos: true}}}, "local");
+    await until(() => page.calls.length === 2);
+    assert.equal(carousel.querySelector(".bvf-carousel-view"), null);
+    resolveCheck({ok: true, results: [accepted(BV_A)]});
+    await until(() => carousel.querySelector(".bvf-carousel-view"));
+    carousel.querySelector(".carousel-item a").href = `https://live.bilibili.com/42?bvid=${BV_A}`;
+    await until(() => carousel.querySelector(".bvf-carousel-view") === null);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(page.calls.length, 2);
+    assert.equal(page.win.getComputedStyle(carousel).display, "none");
+  } finally { page.dom.window.close(); }
 });

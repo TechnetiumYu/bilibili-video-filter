@@ -20,9 +20,13 @@
       const actions = [];
       const wasPinned = carousel.hasAttribute("data-bvf-home-layout");
       const wasCompacted = grid.hasAttribute("data-bvf-flow");
+      const wasFiltered = carousel.hasAttribute("data-bvf-carousel-filtered");
+      const wasEmpty = carousel.hasAttribute("data-bvf-carousel-empty");
       let height = 0;
       try {
         carousel.removeAttribute("data-bvf-home-layout");
+        carousel.removeAttribute("data-bvf-carousel-filtered");
+        carousel.removeAttribute("data-bvf-carousel-empty");
         grid.removeAttribute("data-bvf-flow");
         for (const card of cards) {
           // 可能是嵌套卡片，内外层都要恢复本来的行高。
@@ -38,6 +42,8 @@
         }
         height = carousel.getBoundingClientRect().height;
       } finally {
+        if (wasFiltered) carousel.setAttribute("data-bvf-carousel-filtered", "");
+        if (wasEmpty) carousel.setAttribute("data-bvf-carousel-empty", "");
         if (wasCompacted) grid.setAttribute("data-bvf-flow", "");
         for (const [node, state] of saved) node.setAttribute("data-bvf-state", state);
         for (const [node, display, priority] of actions) {

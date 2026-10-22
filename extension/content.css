@@ -1,4 +1,38 @@
 /* document_start 时开始遮住目标卡片，避免未检查的视频先闪现。 */
+html[data-bvf-active][data-bvf-video-only] .feed-card:not([data-bvf-state="accepted"]) {
+  visibility: hidden !important;
+}
+html[data-bvf-active][data-bvf-video-only] .recommended-swipe:not([data-bvf-carousel-filtered]) {
+  visibility: hidden !important;
+}
+.bvf-carousel-view { display: none; }
+html[data-bvf-active] .recommended-swipe[data-bvf-carousel-empty] {
+  display: none !important;
+}
+html[data-bvf-active] .recommended-swipe[data-bvf-carousel-filtered] {
+  position: relative !important;
+  overflow: hidden;
+}
+html[data-bvf-active] [data-bvf-carousel-filtered] > :not(.bvf-carousel-view),
+html[data-bvf-active] [data-bvf-carousel-filtered] > :not(.bvf-carousel-view) * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+html[data-bvf-active] [data-bvf-carousel-filtered] > .bvf-carousel-view {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: #18191c;
+  color: white;
+  visibility: visible !important;
+}
+.bvf-carousel-view > a { display: block; width: 100%; height: 100%; color: white; }
+.bvf-carousel-view img { width: 100%; height: 100%; object-fit: cover; }
+.bvf-carousel-view > a > span { position: absolute; left: 0; right: 0; bottom: 0; padding: 36px 16px 46px; background: linear-gradient(transparent, #000b); font: 16px/1.5 "Microsoft YaHei", sans-serif; }
+.bvf-carousel-controls { position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 8px; font: 12px/1.5 sans-serif; }
+.bvf-carousel-controls button { cursor: pointer; border: 0; border-radius: 4px; padding: 4px 8px; color: white; background: #0008; }
+.bvf-carousel-controls button:disabled { opacity: .4; cursor: default; }
 html[data-bvf-active] .recommended-swipe[data-bvf-home-layout] {
   height: var(--bvf-home-height) !important;
   min-height: var(--bvf-home-height) !important;
@@ -49,6 +83,10 @@ html[data-bvf-active] [data-bvf-flow] > [data-bvf-item][data-bvf-state="pending"
 }
 html[data-bvf-active] [data-bvf-state="error"] {
   display: none !important;
+}
+html[data-bvf-active] [data-bvf-state="unfiltered"],
+html[data-bvf-active] [data-bvf-state="unfiltered"] * {
+  visibility: visible !important;
 }
 html[data-bvf-active] .bvf-card-actions {
   display: flex;

@@ -157,5 +157,66 @@ test("首页轮播在全部视频被隐藏后保持原生高度，并随窗口�
       assert.equal(result.remaining, 0);
       await searchPage.close();
     });
+    await t.test("仅视频模式保留合格轮播尺寸，全部拒绝后释放占位，关闭后恢复原轮播", async () => {
+      const carouselPage = await browser.newPage({viewport: {width: 1440, height: 900}});
+      await carouselPage.setContent(`<style>
+        .grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:20px}
+        .recommended-swipe{grid-area:1/1/3/3;position:relative;min-height:70px}
+        .carousel-inner{position:absolute;inset:0}.carousel-item{height:100%}
+        .feed-card{height:160px}.bili-video-card{height:100%}
+        @media(max-width:1000px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+      </style><nav>导航与搜索框<input></nav><div class="grid">
+        <div class="recommended-swipe"><div class="carousel-inner">
+          <div class="carousel-item"><a href="https://live.bilibili.com/42">直播</a></div>
+          <div class="carousel-item" id="valid-slide"><a href="https://www.bilibili.com/video/BV1tG411M7Yb">视频</a></div>
+        </div><div class="carousel-footer">活动推广标题</div></div>
+        ${Array.from({length: 6}, () => '<div class="feed-card"><div class="bili-video-card"><a href="https://www.bilibili.com/video/BV1tG411M7Yb">视频</a></div></div>').join("")}
+        <div class="feed-card" id="product"><a href="https://show.bilibili.com/">商品</a></div>
+      </div>`);
+      await carouselPage.addStyleTag({path: path.join(root, "content.css")});
+      for (const file of ["page-adapter.js", "home-layout.js", "carousel-filter.js"]) await carouselPage.addScriptTag({path: path.join(root, file)});
+      for (const width of [1440, 900, 1440]) {
+        await carouselPage.setViewportSize({width, height: 900});
+        const measurement = await carouselPage.evaluate(() => {
+          const carousel = document.querySelector(".recommended-swipe");
+          BiliCarouselFilter.clear(document);
+          BiliHomeLayout.clear(document);
+          BiliPageAdapter.clearLayout(document);
+          document.querySelectorAll("[data-bvf-state]").forEach(node => node.removeAttribute("data-bvf-state"));
+          document.documentElement.removeAttribute("data-bvf-active");
+          document.documentElement.removeAttribute("data-bvf-video-only");
+          const native = carousel.getBoundingClientRect().toJSON();
+          document.documentElement.setAttribute("data-bvf-active", "");
+          document.documentElement.setAttribute("data-bvf-video-only", "");
+          BiliHomeLayout.preserve(document);
+          const cards = BiliPageAdapter.cards(document, true);
+          cards.forEach(node => { node.dataset.bvfState = node.id === "product" ? "rejected" : "accepted"; node.querySelector(".bili-video-card")?.setAttribute("data-bvf-approved", ""); });
+          BiliPageAdapter.compact(document, cards);
+          BiliCarouselFilter.sync(document, [{carousel, root: document.querySelector("#valid-slide"), bvid: "BV1tG411M7Yb", status: "accepted", video: {bvid: "BV1tG411M7Yb", title: "合格视频"}}], true);
+          BiliHomeLayout.preserve(document);
+          const filtered = carousel.getBoundingClientRect().toJSON();
+          const view = carousel.querySelector(".bvf-carousel-view").getBoundingClientRect().toJSON();
+          const nativeHidden = getComputedStyle(carousel.querySelector(".carousel-footer")).visibility === "hidden";
+          BiliCarouselFilter.sync(document, [], true);
+          BiliHomeLayout.preserve(document); // 收起状态再次扫描不应丢失可恢复的原生高度。
+          const hidden = carousel.getBoundingClientRect().height === 0;
+          const grid = document.querySelector(".grid").getBoundingClientRect().toJSON();
+          const first = cards[0].getBoundingClientRect().toJSON();
+          BiliCarouselFilter.clear(document);
+          const restored = carousel.getBoundingClientRect().toJSON();
+          return {native, filtered, view, nativeHidden, hidden, grid, first, restored, navigation: getComputedStyle(document.querySelector("nav")).visibility};
+        });
+        assert.ok(Math.abs(measurement.native.height - measurement.filtered.height) < 1, `${width}px 应保留轮播高度`);
+        assert.ok(Math.abs(measurement.filtered.width - measurement.view.width) < 1);
+        assert.ok(Math.abs(measurement.filtered.height - measurement.view.height) < 1);
+        assert.equal(measurement.nativeHidden, true);
+        assert.equal(measurement.hidden, true);
+        assert.equal(measurement.first.x, measurement.grid.x);
+        assert.equal(measurement.first.y, measurement.grid.y);
+        assert.ok(Math.abs(measurement.native.height - measurement.restored.height) < 1);
+        assert.equal(measurement.navigation, "visible");
+      }
+      await carouselPage.close();
+    });
   } finally { await browser.close(); }
 });

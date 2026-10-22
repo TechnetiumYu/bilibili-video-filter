@@ -1,6 +1,10 @@
 (() => {
   "use strict";
   const Adapter = globalThis.BiliPageAdapter;
+  const Carousel = globalThis.BiliCarouselFilter;
+  let onlyVideos = true;
+  let settingsReady = false;
+  let settingsRevision = 0;
   let mode = Adapter.pageMode(location.href);
   let route = location.href;
   let revision = 0;
@@ -18,6 +22,7 @@
   function activate() {
     if (!document.documentElement) return;
     document.documentElement.toggleAttribute("data-bvf-active", Boolean(mode));
+    document.documentElement.toggleAttribute("data-bvf-video-only", Boolean(mode && onlyVideos));
     if (panel) panel.hidden = !mode;
   }
   activate();
@@ -38,7 +43,7 @@
   function updateSummary() {
     if (!summary) return;
     const counts = {pending: 0, accepted: 0, rejected: 0, error: 0};
-    for (const record of records.values()) counts[record.status] += 1;
+    for (const record of records.values()) if (record.status in counts) counts[record.status] += 1;
     const next = `通过 ${counts.accepted} · 隐藏 ${counts.rejected} · 待查 ${counts.pending} · 失败 ${counts.error}`;
     if (summary.textContent !== next) summary.textContent = next;
     summary.title = lastError || "仅检查当前页面的原生视频卡片；向下滚动会检查新视频。";
@@ -77,6 +82,7 @@
 
   function setState(record, status) {
     record.status = status;
+    if (status !== "accepted") record.video = null;
     record.root.dataset.bvfState = status;
     record.root.dataset.bvfLabel = status === "error" ? "检查失败，可点击右下角重试" : "正在检查视频…";
     record.root.removeAttribute("data-bvf-approved");
@@ -120,9 +126,12 @@
   }
 
   function apply(record, result) {
-    if (!record.root.isConnected || Adapter.videoId(record.root) !== record.bvid) return;
+    if (!record.root.isConnected || identify(record.root) !== record.bvid) return;
     setState(record, result.status);
-    if (result.status === "accepted") renderActions(record, result.video);
+    if (result.status === "accepted") {
+      record.video = result.video;
+      if (!record.carousel) renderActions(record, result.video);
+    }
     if (result.status === "error") lastError = (result.reasons || []).join("；");
   }
 
@@ -143,6 +152,16 @@
     record.root.querySelectorAll("[data-bvf-approved]").forEach(child => child.removeAttribute("data-bvf-approved"));
   }
 
+  function identify(root) {
+    return onlyVideos ? Adapter.ordinaryVideoId(root) : Adapter.videoId(root);
+  }
+
+  function layout() {
+    if (!mode || !document?.documentElement) return;
+    Adapter.compact(document, [...records.values()].filter(record => !record.carousel).map(record => record.root));
+    Carousel.sync(document, [...records.values()], onlyVideos);
+  }
+
   function scan() {
     scanTimer = null;
     if (route !== location.href) {
@@ -157,41 +176,43 @@
     activate();
     if (mode === "feed") globalThis.BiliHomeLayout.preserve(document);
     else globalThis.BiliHomeLayout.clear(document);
-    if (!mode) { Adapter.clearLayout(document); return; }
+    if (!mode) { Adapter.clearLayout(document); Carousel.clear(document); return; }
+    if (!settingsReady) return;
     mountPanel();
-    const found = new Set(Adapter.cards(document));
+    const found = new Map(Adapter.cards(document, onlyVideos).map(root => [root, null]));
+    if (onlyVideos) for (const entry of Carousel.entries(document)) found.set(entry.root, entry.carousel);
     for (const [root, record] of records) {
       if (!root.isConnected || !found.has(root)) { release(record); records.delete(root); }
     }
-    for (const root of found) {
-      const bvid = Adapter.videoId(root);
+    for (const [root, carousel] of found) {
+      const bvid = identify(root);
       let record = records.get(root);
       if (record?.bvid === bvid) {
         // B站可能在相同外层重建子卡片，需要同步嵌套卡片的可见状态。
         if (record.status === "accepted") root.querySelectorAll(Adapter.CARD_SELECTOR)
           .forEach(child => { if (!child.hasAttribute("data-bvf-approved")) child.setAttribute("data-bvf-approved", ""); });
-        if (record.status === "accepted" && decisions.get(bvid)?.video) renderActions(record, decisions.get(bvid).video);
+        if (!record.carousel && record.status === "accepted" && decisions.get(bvid)?.video) renderActions(record, decisions.get(bvid).video);
         continue;
       }
       if (record) release(record);
-      record = {root, bvid, status: "pending"};
+      record = {root, bvid, carousel, status: "pending"};
       records.set(root, record);
-      if (!bvid) setState(record, "rejected");
+      if (!bvid) setState(record, onlyVideos ? "rejected" : "unfiltered");
       else {
         setState(record, "pending");
         observer.observe(root);
         if (decisions.has(bvid)) apply(record, decisions.get(bvid));
       }
     }
-    Adapter.compact(document, records.keys());
+    layout();
     updateSummary();
     pump();
   }
 
   async function pump() {
-    if (running || suspended || !mode) return;
+    if (running || suspended || !mode || !settingsReady || !document?.documentElement) return;
     const batch = [...new Set([...records.values()]
-      .filter(record => record.status === "pending" && inView.has(record.root))
+      .filter(record => record.status === "pending" && (record.carousel || inView.has(record.root)))
       .map(record => record.bvid).filter(Boolean))].slice(0, 8);
     if (!batch.length) return;
     running = true;
@@ -218,7 +239,7 @@
       }
     } finally {
       running = false;
-      if (mode) Adapter.compact(document, records.keys());
+      layout();
       updateSummary();
       pump();
     }
@@ -229,12 +250,17 @@
     if (summary) summary.textContent = "扩展已更新或暂不可用，请刷新 B站页面";
   }
   const mutations = new MutationObserver(() => {
+    if (!document?.documentElement) return;
     // 在浏览器下一次绘制前遮住被复用的卡片，避免节流扫描期间闪出新视频。
-    for (const record of records.values()) if (record.status === "accepted" && Adapter.videoId(record.root) !== record.bvid) {
+    for (const record of records.values()) if (record.status === "accepted" && identify(record.root) !== record.bvid) {
       record.root.dataset.bvfState = "pending";
       record.root.dataset.bvfLabel = "正在检查视频…";
       record.root.querySelectorAll("[data-bvf-approved]").forEach(child => child.removeAttribute("data-bvf-approved"));
+      record.status = "pending";
+      record.video = null;
     }
+    // 轮播原始链接被复用时，立即撤下旧的通过视图，下一轮扫描重新确认。
+    if (mode && onlyVideos) Carousel.sync(document, [...records.values()], true);
     if (!scanTimer) scanTimer = setTimeout(scan, 60);
   });
   mutations.observe(document, {subtree: true, childList: true, attributes: true, attributeFilter: ["href"]});
@@ -254,14 +280,23 @@
       }
     }
     if (!changes.biliFilterSettingsV2) return;
+    settingsRevision += 1;
+    settingsReady = true;
+    onlyVideos = changes.biliFilterSettingsV2.newValue?.onlyVideos !== false;
     revision += 1;
     decisions.clear();
     suspended = false;
-    for (const record of records.values()) if (record.bvid) setState(record, "pending");
-    pump();
+    for (const record of records.values()) release(record);
+    records.clear();
+    Carousel.clear(document);
+    scan();
   });
-  chrome.storage.local.get("biliFilterMarkedVideosV1").then(value => {
+  const initialSettingsRevision = settingsRevision;
+  chrome.storage.local.get(["biliFilterMarkedVideosV1", "biliFilterSettingsV2"]).then(value => {
     savedIds = new Set(Object.keys(value.biliFilterMarkedVideosV1 || {}));
+    if (settingsRevision === initialSettingsRevision) onlyVideos = value.biliFilterSettingsV2?.onlyVideos !== false;
+    settingsReady = true;
+    scan();
   }).catch(fatal);
   scan();
 })();
