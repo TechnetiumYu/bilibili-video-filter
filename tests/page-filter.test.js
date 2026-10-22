@@ -180,7 +180,7 @@ function contentPage(handler, url = "https://www.bilibili.com/", settings = {}) 
   const style = win.document.createElement("style");
   style.textContent = fs.readFileSync(path.join(extension, "content.css"), "utf8");
   win.document.head.append(style);
-  for (const file of ["page-adapter.js", "home-layout.js", "carousel-filter.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
+  for (const file of ["page-adapter.js", "home-layout.js", "carousel-filter.js", "home-stream.js", "content.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
   const addCard = bvid => {
     const card = win.document.createElement("div");
     card.className = "feed-card";
@@ -328,12 +328,15 @@ test("设置页保留旧设置与样本，保存后不再请求推荐或搜索�
     for (const file of ["filter-core.js", "marked-core.js", "feed.js"]) win.eval(fs.readFileSync(path.join(extension, file), "utf8"));
     await until(() => win.document.querySelector("#minFollowers").value === "12345");
     assert.equal(win.document.querySelector("#onlyVideos").checked, true);
+    assert.equal(win.document.querySelector("#continuousLoad").checked, true);
     win.document.querySelector("#onlyVideos").checked = false;
+    win.document.querySelector("#continuousLoad").checked = false;
     win.document.querySelector("#minFollowers").value = "23456";
     win.document.querySelector("#settingsForm").dispatchEvent(new win.Event("submit", {cancelable: true}));
     await until(() => win.document.querySelector("#saveStatus").textContent.includes("已保存"));
     assert.equal(storage.biliFilterSettingsV2.minFollowers, 23456);
     assert.equal(storage.biliFilterSettingsV2.onlyVideos, false);
+    assert.equal(storage.biliFilterSettingsV2.continuousLoad, false);
     assert.equal(calls.length, 0);
     assert.equal(win.document.querySelector("#searchForm"), null);
     assert.equal(win.document.querySelector("#videoGrid"), null);
@@ -346,6 +349,8 @@ test("仅视频开关默认开启，显式关闭不会被归一化或旧设置�
   assert.equal(Core.normalizeSettings({minFollowers: 12345}).onlyVideos, true);
   assert.equal(Core.normalizeSettings({onlyVideos: false}).onlyVideos, false);
   assert.equal(Core.validateSettings({onlyVideos: false}).settings.onlyVideos, false);
+  assert.equal(Core.normalizeSettings({}).continuousLoad, true);
+  assert.equal(Core.normalizeSettings({continuousLoad: false}).continuousLoad, false);
 });
 
 test("普通视频按主目标识别，外链BV参数、伪域名和直播附带BV链接不能冒充", () => {

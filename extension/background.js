@@ -277,6 +277,39 @@ async function fetchFeed(options = {}) {
   return cachedCandidates(`feed:${batch}:${pageSize}`, () => fetchFeedUncached({batch, pageSize, requestProfile}));
 }
 
+// Native-home continuation must not silently switch providers or reuse old feed pages.
+// In particular, a 412 stops this request without a popular-feed fallback or retry.
+async function fetchHomeCandidates(options = {}) {
+  const requestedBatch = options?.batch === undefined ? 1 : options.batch;
+  if (typeof requestedBatch !== "number" || !Number.isFinite(requestedBatch)
+      || requestedBatch < 1 || requestedBatch > 1000000) {
+    throw new BiliApiError("首页推荐批次必须是 1 到 1000000 之间的数字", {endpoint: "首页推荐接口"});
+  }
+  const batch = Math.floor(requestedBatch);
+  const query = new URLSearchParams({
+    fresh_type: "4",
+    ps: "20",
+    fresh_idx: String(batch),
+    fresh_idx_1h: String(batch),
+    feed_version: "V8",
+    homepage_ver: "1",
+  });
+  const data = await apiJson(`/x/web-interface/index/top/feed/rcmd?${query}`,
+    "https://www.bilibili.com/", "首页推荐接口", "feed-fast", "include");
+  if (data?.v_voucher) {
+    throw new BiliApiError("首页推荐接口要求额外验证", {status: 412, endpoint: "首页推荐接口"});
+  }
+  if (!Array.isArray(data?.item)) {
+    throw new BiliApiError("首页推荐响应缺少视频候选列表", {endpoint: "首页推荐接口"});
+  }
+  return {
+    items: data.item.map(normalizeRecommendedItem)
+      .filter(item => item && typeof item.bvid === "string" && /^BV[0-9A-Za-z]{10}$/.test(item.bvid)),
+    noMore: data.no_more === true || data.is_finish === true,
+    batch,
+  };
+}
+
 async function searchVideos(options = {}) {
   const query = String(options.query || "").trim().slice(0, 100);
   const page = Math.max(1, Math.min(1000, Number(options.page) || 1));
@@ -655,6 +688,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     "bili-filter-open-settings": async () => { await chrome.runtime.openOptionsPage(); return {}; },
     "bili-filter-mark-page": () => markPageVideo(message.bvid, message.context),
     "bili-filter-update-mark": () => updateMarkedVideo(message.bvid, message.changes),
+    "bili-filter-home-candidates": () => fetchHomeCandidates(message.options),
     "bili-filter-fetch-feed": () => fetchFeed(message.options),
     "bili-filter-search": () => searchVideos(message.options),
     "bili-filter-fetch-followers": () => fetchFollowerCounts(message.mids, message.requestProfile),

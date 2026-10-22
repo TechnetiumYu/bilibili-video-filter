@@ -67,7 +67,7 @@
         const style = document.defaultView.getComputedStyle(parent);
         if (!style.display.includes("grid") && !(style.display.includes("flex") && style.flexWrap === "wrap")) continue;
         for (const child of parent.children) {
-          if (child.matches(".recommended-swipe, .bili-banner, .bili-header__banner, script, style, template, nav, header, footer")) continue;
+          if (child.matches("[data-bvf-owned], .recommended-swipe, .bili-banner, .bili-header__banner, script, style, template, nav, header, footer")) continue;
           unique.add(child);
         }
       }

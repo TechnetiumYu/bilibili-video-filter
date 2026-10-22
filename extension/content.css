@@ -1,4 +1,33 @@
 /* document_start 时开始遮住目标卡片，避免未检查的视频先闪现。 */
+html[data-bvf-active] .bvf-home-stream {
+  max-width: 100%;
+  margin: 24px auto;
+  box-sizing: border-box;
+}
+html[data-bvf-active] .bvf-stream-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+html[data-bvf-active] .bvf-stream-card { min-width: 0; }
+html[data-bvf-active] .bvf-stream-card .bili-video-card { position: static; height: auto; width: 100%; }
+html[data-bvf-active] .bvf-stream-cover {
+  display: block;
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f2f3;
+}
+.bvf-stream-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.bvf-stream-cover span { position: absolute; inset: auto 0 0; padding: 14px 8px 5px; background: linear-gradient(transparent, #0009); color: white; font: 12px/1.5 sans-serif; }
+html[data-bvf-active] .bvf-stream-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 8px 0 4px; color: #18191c; font: 15px/1.5 "Microsoft YaHei", sans-serif; text-decoration: none; }
+.bvf-stream-title:hover { color: #00aeec !important; }
+.bvf-stream-uploader { color: #9499a0; font: 12px/1.7 "Microsoft YaHei", sans-serif; text-decoration: none; }
+.bvf-stream-footer { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 72px; color: #9499a0; font: 13px/1.7 "Microsoft YaHei", sans-serif; }
+.bvf-stream-footer button { cursor: pointer; padding: 5px 14px; border: 1px solid #e3e5e7; border-radius: 6px; background: #fff; color: #61666d; font: inherit; }
+.bvf-stream-footer button:disabled { cursor: default; opacity: .5; }
 html[data-bvf-active][data-bvf-video-only] .feed-card:not([data-bvf-state="accepted"]) {
   visibility: hidden !important;
 }

@@ -3,6 +3,7 @@
   const Adapter = globalThis.BiliPageAdapter;
   const Carousel = globalThis.BiliCarouselFilter;
   let onlyVideos = true;
+  let continuousLoad = true;
   let settingsReady = false;
   let settingsRevision = 0;
   let mode = Adapter.pageMode(location.href);
@@ -10,6 +11,7 @@
   let revision = 0;
   let running = false;
   let scanTimer;
+  let streamFrame;
   let suspended = false;
   const records = new Map();
   const decisions = new Map();
@@ -18,6 +20,46 @@
   let summary;
   let lastError = "";
   let savedIds = new Set();
+  const stream = globalThis.BiliHomeStream.create(document, {
+    getState: () => ({
+      enabled: Boolean(document?.documentElement && settingsReady && continuousLoad && mode === "feed" && route === location.href),
+      visible: document?.visibilityState === "visible",
+      suspended,
+      checking: running || [...records.values()].some(record => record.status === "pending"),
+      roots: [...records.values()].filter(record => !record.carousel).map(record => record.root),
+      bvids: [...records.values()].map(record => record.bvid),
+      statuses: new Map([
+        ...[...decisions].map(([bvid, result]) => [bvid, result.status]),
+        ...[...records.values()].filter(record => record.bvid).map(record => [record.bvid, record.status]),
+      ]),
+    }),
+    fetchCandidates: options => message({type: "bili-filter-home-candidates", options}),
+    appendCandidates: (grid, items) => {
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.className = "feed-card bvf-stream-card";
+        card.dataset.bvfStreamBvid = item.bvid;
+        const video = document.createElement("div");
+        video.className = "bili-video-card";
+        const link = document.createElement("a");
+        link.href = `https://www.bilibili.com/video/${item.bvid}`;
+        link.textContent = "正在检查视频…";
+        video.append(link);
+        card.append(video);
+        grid.append(card);
+      }
+    },
+    onChange: () => scan(),
+    onError: error => {
+      lastError = error.message;
+      if (error.biliRateLimited || error.status === 412) {
+        suspended = true;
+        for (const record of records.values()) if (record.status === "pending") setState(record, "error");
+      }
+      updateSummary();
+    },
+    onResume: () => retryFailed(false),
+  });
 
   function activate() {
     if (!document.documentElement) return;
@@ -33,7 +75,10 @@
         chrome.runtime.sendMessage(payload, result => {
           const error = chrome.runtime.lastError;
           if (error) reject(new Error(error.message));
-          else if (!result?.ok) reject(new Error(result?.error || "过滤后台没有响应"));
+          else if (!result?.ok) reject(Object.assign(new Error(result?.error || "过滤后台没有响应"), {
+            status: Number(result?.status) || 0,
+            biliRateLimited: Boolean(result?.biliRateLimited),
+          }));
           else resolve(result);
         });
       } catch (error) { reject(error); }
@@ -66,13 +111,7 @@
     settings.addEventListener("click", () => message({type: "bili-filter-open-settings"}).catch(fatal));
     const retry = document.createElement("button");
     retry.textContent = "重试失败项";
-    retry.addEventListener("click", () => {
-      for (const [bvid, result] of decisions) if (result.status === "error") decisions.delete(bvid);
-      for (const record of records.values()) if (record.status === "error") setState(record, "pending");
-      suspended = false;
-      lastError = "";
-      scan();
-    });
+    retry.addEventListener("click", () => retryFailed());
     section.append(heading, summary, settings, retry);
     shadow.append(style, section);
     document.body.append(panel);
@@ -91,6 +130,51 @@
       else child.removeAttribute("data-bvf-approved");
     }
     if (status !== "accepted") record.root.querySelector(".bvf-card-actions")?.remove();
+  }
+
+  function retryFailed(resumeStream = true) {
+    for (const [bvid, result] of decisions) if (result.status === "error") decisions.delete(bvid);
+    for (const record of records.values()) if (record.status === "error") setState(record, "pending");
+    suspended = false;
+    lastError = "";
+    scan();
+    if (resumeStream) void stream.resume();
+  }
+
+  function renderStreamVideo(record, video) {
+    if (!record.root.matches(".bvf-stream-card")) return;
+    const signature = JSON.stringify([record.bvid, video.title, video.coverUrl, video.playCount, video.uploaderId, video.uploaderName]);
+    if (record.root.dataset.bvfRendered === signature) return;
+    const body = record.root.querySelector(".bili-video-card");
+    const cover = document.createElement("a");
+    cover.className = "bvf-stream-cover";
+    cover.href = `https://www.bilibili.com/video/${record.bvid}`;
+    cover.target = "_blank";
+    cover.rel = "noopener noreferrer";
+    const image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    const coverUrl = String(video.coverUrl || "").replace(/^\/\//, "https://").replace(/^http:/, "https:");
+    if (coverUrl.startsWith("https://")) image.src = coverUrl;
+    const stats = document.createElement("span");
+    const views = Number(video.playCount);
+    stats.textContent = `${views >= 10000 ? `${(views / 10000).toFixed(1)}万` : views} 播放`;
+    cover.append(image, stats);
+    const title = document.createElement("a");
+    title.className = "bvf-stream-title";
+    title.href = cover.href;
+    title.target = "_blank";
+    title.rel = "noopener noreferrer";
+    title.textContent = video.title || record.bvid;
+    const uploader = document.createElement("a");
+    uploader.className = "bvf-stream-uploader";
+    uploader.href = `https://space.bilibili.com/${encodeURIComponent(video.uploaderId || "")}`;
+    uploader.target = "_blank";
+    uploader.rel = "noopener noreferrer";
+    uploader.textContent = video.uploaderName || "UP主";
+    body.replaceChildren(cover, title, uploader);
+    record.root.dataset.bvfRendered = signature;
   }
 
   function renderActions(record, video) {
@@ -130,6 +214,7 @@
     setState(record, result.status);
     if (result.status === "accepted") {
       record.video = result.video;
+      renderStreamVideo(record, result.video);
       if (!record.carousel) renderActions(record, result.video);
     }
     if (result.status === "error") lastError = (result.reasons || []).join("；");
@@ -165,6 +250,7 @@
   function scan() {
     scanTimer = null;
     if (route !== location.href) {
+      stream.clear();
       route = location.href;
       mode = Adapter.pageMode(route);
       revision += 1;
@@ -176,11 +262,17 @@
     activate();
     if (mode === "feed") globalThis.BiliHomeLayout.preserve(document);
     else globalThis.BiliHomeLayout.clear(document);
-    if (!mode) { Adapter.clearLayout(document); Carousel.clear(document); return; }
+    if (!mode) { Adapter.clearLayout(document); Carousel.clear(document); stream.clear(); return; }
     if (!settingsReady) return;
     mountPanel();
     const found = new Map(Adapter.cards(document, onlyVideos).map(root => [root, null]));
     if (onlyVideos) for (const entry of Carousel.entries(document)) found.set(entry.root, entry.carousel);
+    // 原站稍后也可能加载同一个 BV；保留原生卡片，移除托管区的重复副本。
+    const nativeIds = new Set([...found.keys()].filter(root => !root.closest(".bvf-home-stream")).map(identify).filter(Boolean));
+    for (const root of found.keys()) if (root.matches(".bvf-stream-card") && nativeIds.has(identify(root))) {
+      root.remove();
+      found.delete(root);
+    }
     for (const [root, record] of records) {
       if (!root.isConnected || !found.has(root)) { release(record); records.delete(root); }
     }
@@ -207,10 +299,12 @@
     layout();
     updateSummary();
     pump();
+    void stream.update();
   }
 
   async function pump() {
-    if (running || suspended || !mode || !settingsReady || !document?.documentElement) return;
+    if (running || suspended || !mode || !settingsReady || !document?.documentElement
+      || route !== location.href || document.visibilityState === "hidden") return;
     const batch = [...new Set([...records.values()]
       .filter(record => record.status === "pending" && (record.carousel || inView.has(record.root)))
       .map(record => record.bvid).filter(Boolean))].slice(0, 8);
@@ -242,6 +336,7 @@
       layout();
       updateSummary();
       pump();
+      void stream.update();
     }
   }
 
@@ -269,6 +364,11 @@
   addEventListener("resize", () => {
     if (!scanTimer) scanTimer = setTimeout(scan, 60);
   });
+  addEventListener("scroll", () => {
+    if (streamFrame) return;
+    streamFrame = requestAnimationFrame(() => { streamFrame = null; void stream.update(); });
+  }, {passive: true});
+  document.addEventListener("visibilitychange", () => { pump(); void stream.update(); });
   setInterval(() => { if (route !== location.href) scan(); }, 500);
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
@@ -283,6 +383,8 @@
     settingsRevision += 1;
     settingsReady = true;
     onlyVideos = changes.biliFilterSettingsV2.newValue?.onlyVideos !== false;
+    continuousLoad = changes.biliFilterSettingsV2.newValue?.continuousLoad !== false;
+    if (!continuousLoad) stream.clear();
     revision += 1;
     decisions.clear();
     suspended = false;
@@ -294,7 +396,10 @@
   const initialSettingsRevision = settingsRevision;
   chrome.storage.local.get(["biliFilterMarkedVideosV1", "biliFilterSettingsV2"]).then(value => {
     savedIds = new Set(Object.keys(value.biliFilterMarkedVideosV1 || {}));
-    if (settingsRevision === initialSettingsRevision) onlyVideos = value.biliFilterSettingsV2?.onlyVideos !== false;
+    if (settingsRevision === initialSettingsRevision) {
+      onlyVideos = value.biliFilterSettingsV2?.onlyVideos !== false;
+      continuousLoad = value.biliFilterSettingsV2?.continuousLoad !== false;
+    }
     settingsReady = true;
     scan();
   }).catch(fatal);

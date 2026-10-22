@@ -20,6 +20,7 @@
     exportMarkedButton: document.querySelector("#exportMarkedButton"),
     form: document.querySelector("#settingsForm"),
     onlyVideos: document.querySelector("#onlyVideos"),
+    continuousLoad: document.querySelector("#continuousLoad"),
     keywords: document.querySelector("#blockedKeywords"),
     scopeTitle: document.querySelector("#scopeTitle"),
     scopeDescription: document.querySelector("#scopeDescription"),
@@ -350,6 +351,7 @@
 
   function writeSettingsForm(value) {
     elements.onlyVideos.checked = value.onlyVideos;
+    elements.continuousLoad.checked = value.continuousLoad;
     elements.keywords.value = value.blockedKeywords.join("\n");
     elements.scopeTitle.checked = value.keywordScopes.title;
     elements.scopeDescription.checked = value.keywordScopes.description;
@@ -368,6 +370,7 @@
   function readSettingsForm() {
     return {
       onlyVideos: elements.onlyVideos.checked,
+      continuousLoad: elements.continuousLoad.checked,
       blockedKeywords: elements.keywords.value.split(/[\n,，]+/).map(value => value.trim()).filter(Boolean),
       keywordScopes: {
         title: elements.scopeTitle.checked,

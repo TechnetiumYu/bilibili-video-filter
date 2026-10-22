@@ -7,6 +7,7 @@
 
   const DEFAULT_SETTINGS = Object.freeze({
     onlyVideos: true,
+    continuousLoad: true,
     blockedKeywords: ["破防", "急了", "对线", "开战", "逆天"],
     keywordScopes: {
       title: true,
@@ -77,6 +78,7 @@
     const scopes = input.keywordScopes || {};
     return {
       onlyVideos: input.onlyVideos !== false,
+      continuousLoad: input.continuousLoad !== false,
       blockedKeywords: Array.from(new Set((input.blockedKeywords || [])
         .map(value => String(value).trim())
         .filter(Boolean))),
