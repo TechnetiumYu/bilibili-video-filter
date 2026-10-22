@@ -21,7 +21,8 @@ html[data-bvf-active] .bvf-stream-cover {
   background: #f1f2f3;
 }
 .bvf-stream-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.bvf-stream-cover span { position: absolute; inset: auto 0 0; padding: 14px 8px 5px; background: linear-gradient(transparent, #0009); color: white; font: 12px/1.5 sans-serif; }
+.bvf-stream-cover > .bvf-stream-stats { position: absolute; inset: auto 0 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 8px 5px; background: linear-gradient(transparent, #0009); color: white; font: 12px/1.5 sans-serif; }
+.bvf-stream-stats > span { white-space: nowrap; }
 html[data-bvf-active] .bvf-stream-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 8px 0 4px; color: #18191c; font: 15px/1.5 "Microsoft YaHei", sans-serif; text-decoration: none; }
 .bvf-stream-title:hover { color: #00aeec !important; }
 .bvf-stream-uploader { color: #9499a0; font: 12px/1.7 "Microsoft YaHei", sans-serif; text-decoration: none; }

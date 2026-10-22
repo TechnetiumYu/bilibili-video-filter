@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "B站视频过滤器",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "仅在B站首页推荐流中按关键词、播放量、UP主粉丝数和特殊话题过滤视频，不干扰搜索和UP主空间。",
   "permissions": ["storage"],
   "host_permissions": [

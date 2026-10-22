@@ -40,7 +40,7 @@ function background(settings = {}, fetchOverride) {
       else if (parsed.pathname === "/x/web-interface/view/detail") {
         const bvid = parsed.searchParams.get("bvid");
         data = {View: {bvid, title: bvid === BV_B ? "彻底破防了" : "鸿蒙使用技巧",
-          desc: "正常简介", owner: {mid: 42, name: "测试UP"}, stat: {view: 20000},
+          desc: "正常简介", owner: {mid: 42, name: "测试UP"}, stat: {view: 20000, danmaku: 6789},
           tid: 95, tname: "数码", pubdate: 1669463590}, Tags: [{tag_name: "鸿蒙"}]};
       } else throw new Error(`意外请求 ${url}`);
       return {ok: true, status: 200, json: async () => ({code: 0, data})};
@@ -59,6 +59,7 @@ test("原页面使用准确数据过滤，关键词拒绝不会继续查询粉�
   const accepted = response.results.find(x => x.bvid === BV_A);
   assert.equal(accepted.status, "accepted");
   assert.equal(accepted.video.playCount, 20000);
+  assert.equal(accepted.video.danmakuCount, 6789);
   assert.deepEqual(Array.from(accepted.video.tags), ["鸿蒙"]);
   assert.equal(response.results.find(x => x.bvid === BV_B).status, "rejected");
   assert.equal(bg.calls.filter(x => x.includes("/x/relation/stat")).length, 1);
@@ -219,6 +220,33 @@ test("动态新增、重复BV去重、原生卡片替换、规则更新和退出
     page.win.dispatchEvent(new page.win.PopStateEvent("popstate"));
     assert.equal(page.win.document.documentElement.hasAttribute("data-bvf-active"), false);
     assert.equal(first.hasAttribute("data-bvf-state"), false);
+  } finally { page.dom.window.close(); }
+});
+
+test("续载卡片弹幕量区分零与未知，单独更新弹幕数据也会重新渲染", async () => {
+  let danmakuCount = 0;
+  const page = contentPage(payload => ({ok: true, results: payload.bvids.map(bvid => ({...accepted(bvid),
+    video: {...accepted(bvid).video, title: "测试视频", playCount: 20000, danmakuCount, uploaderId: "42"}}))}),
+  "https://www.bilibili.com/", {continuousLoad: false});
+  try {
+    const section = page.win.document.createElement("section");
+    section.className = "bvf-home-stream";
+    section.innerHTML = `<div class="bvf-stream-grid" style="display:grid"><div class="feed-card bvf-stream-card"><div class="bili-video-card"><a href="/video/${BV_A}">检查中</a></div></div></div>`;
+    page.win.document.body.append(section);
+    const card = section.querySelector(".bvf-stream-card");
+    await until(() => card.dataset.bvfState === "accepted");
+    assert.equal(card.querySelector(".bvf-stream-play-count").textContent, "2.0万 播放");
+    assert.equal(card.querySelector(".bvf-stream-danmaku-count").textContent, "0 弹幕");
+    for (const [value, expected] of [[12345, "1.2万 弹幕"], [100000000, "1.0亿 弹幕"], [undefined, "弹幕量未知"], [null, "弹幕量未知"], [-1, "弹幕量未知"]]) {
+      danmakuCount = value;
+      const before = page.calls.length;
+      page.changes[0]({biliFilterSettingsV2: {newValue: {continuousLoad: false}}}, "local");
+      await until(() => page.calls.length > before && card.dataset.bvfState === "accepted"
+        && card.querySelector(".bvf-stream-danmaku-count").textContent === expected);
+      assert.equal(card.querySelector(".bvf-stream-danmaku-count").title, value >= 0 && value !== null ? `弹幕量：${value}` : "弹幕量未知");
+    }
+    assert.equal(card.querySelectorAll(".bvf-card-actions").length, 1);
+    assert.ok(page.calls.every(call => call.type === "bili-filter-check-page"));
   } finally { page.dom.window.close(); }
 });
 

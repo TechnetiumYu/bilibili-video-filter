@@ -143,7 +143,7 @@
 
   function renderStreamVideo(record, video) {
     if (!record.root.matches(".bvf-stream-card")) return;
-    const signature = JSON.stringify([record.bvid, video.title, video.coverUrl, video.playCount, video.uploaderId, video.uploaderName]);
+    const signature = JSON.stringify([record.bvid, video.title, video.coverUrl, video.playCount, video.danmakuCount, video.uploaderId, video.uploaderName]);
     if (record.root.dataset.bvfRendered === signature) return;
     const body = record.root.querySelector(".bili-video-card");
     const cover = document.createElement("a");
@@ -158,8 +158,18 @@
     const coverUrl = String(video.coverUrl || "").replace(/^\/\//, "https://").replace(/^http:/, "https:");
     if (coverUrl.startsWith("https://")) image.src = coverUrl;
     const stats = document.createElement("span");
-    const views = Number(video.playCount);
-    stats.textContent = `${views >= 10000 ? `${(views / 10000).toFixed(1)}万` : views} 播放`;
+    stats.className = "bvf-stream-stats";
+    for (const [className, value, label] of [["bvf-stream-play-count", video.playCount, "播放"], ["bvf-stream-danmaku-count", video.danmakuCount, "弹幕"]]) {
+      const metric = document.createElement("span");
+      metric.className = className;
+      const known = typeof value === "number" && Number.isFinite(value) && value >= 0;
+      const compact = !known ? "" : value >= 100000000 ? `${(value / 100000000).toFixed(1)}亿`
+        : value >= 10000 ? `${(value / 10000).toFixed(1)}万` : String(value);
+      metric.textContent = known ? `${compact} ${label}` : `${label}量未知`;
+      metric.title = known ? `${label}量：${value}` : `${label}量未知`;
+      metric.setAttribute("aria-label", metric.title);
+      stats.append(metric);
+    }
     cover.append(image, stats);
     const title = document.createElement("a");
     title.className = "bvf-stream-title";

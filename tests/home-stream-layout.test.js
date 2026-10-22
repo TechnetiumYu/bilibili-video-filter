@@ -47,7 +47,8 @@ test("首页连续加载的完整内容脚本：筛选后补齐、滚动续页�
                 {ok: true, items: Array.from({length: 20}, (_, index) => ({bvid: `BV${String(batch * 20 + index).padStart(10, "0")}`, title: "未确认的候选标题"})), noMore: batch >= 4});
             } else if (payload.type === "bili-filter-check-page") callback({ok: true, rateLimited: filterBlocked,
               results: payload.bvids.map(bvid => ({bvid, status: filterBlocked ? "error" : Number(bvid.slice(2)) % 4 === 0 ? "accepted" : "rejected",
-                reasons: filterBlocked ? ["HTTP 412"] : [], video: {bvid, title: `准确标题${bvid}`, uploaderId: "42", uploaderName: "测试UP", publishTime: 1669463590, playCount: 20000}}))});
+                reasons: filterBlocked ? ["HTTP 412"] : [], video: {bvid, title: `准确标题${bvid}`, uploaderId: "42", uploaderName: "测试UP", publishTime: 1669463590, playCount: 20000,
+                  danmakuCount: Number(bvid.slice(2)) % 3 === 0 ? 0 : Number(bvid.slice(2)) % 3 === 1 ? 12345 : undefined}}))});
             else callback({ok: true});
           }, 5);
         }},
@@ -65,6 +66,38 @@ test("首页连续加载的完整内容脚本：筛选后补齐、滚动续页�
     assert.equal(await page.locator("nav input").isVisible(), true);
     assert.match(await page.locator('.bvf-stream-card[data-bvf-state="accepted"] .bvf-stream-title').first().textContent(), /^准确标题/);
     assert.equal(await page.getByText("未确认的候选标题", {exact: true}).count(), 0);
+    for (const [bvid, expectedText, exactCount] of [
+      ["BV0000000024", "0 弹幕", 0],
+      ["BV0000000028", "1.2万 弹幕", 12345],
+      ["BV0000000020", "弹幕量未知", undefined],
+    ]) {
+      const cover = page.locator(`.bvf-stream-card[data-bvf-stream-bvid="${bvid}"] .bvf-stream-cover`);
+      const plays = cover.locator(".bvf-stream-play-count");
+      const danmaku = cover.locator(".bvf-stream-danmaku-count");
+      assert.equal(await plays.count(), 1, "播放量必须是封面中的独立数值");
+      assert.equal(await danmaku.count(), 1, "弹幕量必须是封面中的独立数值");
+      assert.equal(await plays.textContent(), "2.0万 播放");
+      assert.equal(await danmaku.textContent(), expectedText);
+      assert.equal(await danmaku.isVisible(), true);
+      const coverBox = await cover.boundingBox();
+      const playBox = await plays.boundingBox();
+      const danmakuBox = await danmaku.boundingBox();
+      assert.ok(coverBox && playBox && danmakuBox, "封面及两个统计值都应占据可见区域");
+      for (const box of [playBox, danmakuBox]) {
+        assert.ok(box.width > 0 && box.height > 0);
+        assert.ok(box.x >= coverBox.x - 1 && box.y >= coverBox.y - 1
+          && box.x + box.width <= coverBox.x + coverBox.width + 1
+          && box.y + box.height <= coverBox.y + coverBox.height + 1, "统计值不能溢出封面");
+      }
+      assert.ok(playBox.x + playBox.width <= danmakuBox.x + 1 || danmakuBox.x + danmakuBox.width <= playBox.x + 1
+        || playBox.y + playBox.height <= danmakuBox.y + 1 || danmakuBox.y + danmakuBox.height <= playBox.y + 1,
+      "播放量与弹幕量不能相互重叠");
+      if (exactCount !== undefined) {
+        assert.match(await danmaku.getAttribute("title") || "", new RegExp(`\\b${exactCount}\\b`), "悬停提示保留完整弹幕整数");
+      } else {
+        assert.doesNotMatch(await danmaku.textContent(), /^0\b/, "未知弹幕量不能冒充为零");
+      }
+    }
     for (let attempt = 0; attempt < 15; attempt += 1) {
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await page.waitForTimeout(100);
